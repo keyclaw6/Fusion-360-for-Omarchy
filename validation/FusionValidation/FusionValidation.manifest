@@ -1,0 +1,9 @@
+{
+  "autodeskProduct": "Fusion",
+  "type": "script",
+  "author": "Fusion 360 for Omarchy contributors",
+  "description": {"": "Create a fresh local modeling and viewport validation fixture."},
+  "version": "0.1.0",
+  "supportedOS": "windows",
+  "editEnabled": true
+}

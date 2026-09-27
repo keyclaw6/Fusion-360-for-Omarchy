@@ -1,0 +1,327 @@
+diff --git a/dlls/kernelbase/registry.c b/dlls/kernelbase/registry.c
+index 7ec30c2ca7f..3e782e68181 100644
+--- a/dlls/kernelbase/registry.c
++++ b/dlls/kernelbase/registry.c
+@@ -3206,36 +3206,311 @@ cleanup:
+ }
+ 
+ 
+-/******************************************************************************
+- * RegLoadAppKeyA (kernelbase.@)
++/* --- minimal binary registry hive (regf) reader for RegLoadAppKey ----------
+  *
++ * Wine's registry server only understands its own text format, so it cannot
++ * load Windows binary "regf" hives. RegLoadAppKey is used (e.g. by Autodesk's
++ * MSIX/AdIX installer) to read a package's binary Registry.dat. We parse the
++ * hive here and recreate its keys/values under a fresh volatile key, then hand
++ * back a handle to that key.
+  */
+-LSTATUS WINAPI RegLoadAppKeyA(const char *file, HKEY *result, REGSAM sam, DWORD options, DWORD reserved)
++
++#define HIVE_DATA_OFFSET 0x1000  /* file offset where the cell/hbin area starts */
++
++struct hive_buf
++{
++    const BYTE *data;
++    DWORD       size;
++};
++
++/* return a pointer to the content of the cell at hive-relative offset, and its
++ * usable length; NULL on any out-of-bounds/invalid access */
++static const BYTE *hive_cell( const struct hive_buf *h, DWORD off, DWORD *len )
+ {
+-    FIXME("%s %p %lu %lu %lu: stub\n", wine_dbgstr_a(file), result, sam, options, reserved);
++    DWORD pos;
++    int cell_size;
++
++    if (off == 0xffffffff) return NULL;
++    pos = HIVE_DATA_OFFSET + off;
++    if (pos + 4 < pos || pos + 4 > h->size) return NULL;
++    memcpy( &cell_size, h->data + pos, 4 );
++    if (cell_size >= 0) return NULL;           /* free cell */
++    cell_size = -cell_size;
++    if ((DWORD)cell_size < 4 || pos + (DWORD)cell_size > h->size) return NULL;
++    if (len) *len = cell_size - 4;
++    return h->data + pos + 4;
++}
+ 
+-    if (!file || reserved)
+-        return ERROR_INVALID_PARAMETER;
++static inline WORD  hive_u16( const BYTE *p ) { WORD v;  memcpy( &v, p, 2 ); return v; }
++static inline DWORD hive_u32( const BYTE *p ) { DWORD v; memcpy( &v, p, 4 ); return v; }
+ 
+-    *result = (HKEY)0xdeadbeef;
+-    return ERROR_SUCCESS;
++/* convert a hive key/value name (ASCII or UTF-16LE) into a NUL-terminated WCHAR */
++static WCHAR *hive_name( const BYTE *p, DWORD byte_len, BOOL is_ascii )
++{
++    WCHAR *out;
++    DWORD i, count;
++
++    count = is_ascii ? byte_len : byte_len / sizeof(WCHAR);
++    if (!(out = HeapAlloc( GetProcessHeap(), 0, (count + 1) * sizeof(WCHAR) ))) return NULL;
++    if (is_ascii) for (i = 0; i < count; i++) out[i] = (BYTE)p[i];
++    else          for (i = 0; i < count; i++) out[i] = hive_u16( p + i * 2 );
++    out[count] = 0;
++    return out;
++}
++
++/* fetch the data of a vk value, handling inline and "db" big-data records;
++ * caller frees *alloc if non-NULL */
++static const BYTE *hive_value_data( const struct hive_buf *h, DWORD data_len, DWORD data_off,
++                                    BYTE **alloc, DWORD *out_len )
++{
++    const BYTE *cell;
++    DWORD clen;
++
++    *alloc = NULL;
++    if (data_len & 0x80000000)   /* data stored inline in the offset field (LE dword) */
++    {
++        DWORD n = data_len & 0x7fffffff;
++        if (n > 4) n = 4;
++        *out_len = n;
++        if (!n) return (const BYTE *)"";
++        if (!(*alloc = HeapAlloc( GetProcessHeap(), 0, 4 ))) { *out_len = 0; return NULL; }
++        memcpy( *alloc, &data_off, n );
++        return *alloc;
++    }
++    if (!data_len) { *out_len = 0; return (const BYTE *)""; }
++
++    if (!(cell = hive_cell( h, data_off, &clen ))) { *out_len = 0; return NULL; }
++
++    if (data_len > 16344 && clen >= 4 && cell[0] == 'd' && cell[1] == 'b')
++    {
++        DWORD nseg = hive_u16( cell + 2 ), list_off = hive_u32( cell + 4 );
++        const BYTE *list;
++        DWORD list_len, copied = 0, i;
++        BYTE *buf;
++
++        if (!(list = hive_cell( h, list_off, &list_len )) || list_len < nseg * 4) { *out_len = 0; return NULL; }
++        if (!(buf = HeapAlloc( GetProcessHeap(), 0, data_len ))) { *out_len = 0; return NULL; }
++        for (i = 0; i < nseg && copied < data_len; i++)
++        {
++            const BYTE *seg;
++            DWORD seg_len, take;
++            if (!(seg = hive_cell( h, hive_u32( list + i * 4 ), &seg_len ))) break;
++            take = data_len - copied;
++            if (take > 16344) take = 16344;
++            if (take > seg_len) take = seg_len;
++            memcpy( buf + copied, seg, take );
++            copied += take;
++        }
++        *alloc = buf;
++        *out_len = copied;
++        return buf;
++    }
++
++    *out_len = (data_len <= clen) ? data_len : clen;
++    return cell;
++}
++
++/* recreate all values of the nk key whose content is at @nk under @dst */
++static void hive_import_values( const struct hive_buf *h, const BYTE *nk, DWORD nk_len, HKEY dst )
++{
++    DWORD count = hive_u32( nk + 0x24 ), list_off = hive_u32( nk + 0x28 ), i, list_len;
++    const BYTE *list;
++
++    if (nk_len < 0x2c || !count || count == 0xffffffff) return;
++    if (!(list = hive_cell( h, list_off, &list_len )) || list_len < count * 4) return;
++
++    for (i = 0; i < count; i++)
++    {
++        const BYTE *vk;
++        DWORD vk_len, data_len, data_off, out_len;
++        WORD name_len, flags;
++        WCHAR *name;
++        BYTE *alloc;
++        const BYTE *data;
++
++        if (!(vk = hive_cell( h, hive_u32( list + i * 4 ), &vk_len )) || vk_len < 0x14) continue;
++        if (vk[0] != 'v' || vk[1] != 'k') continue;
++        name_len = hive_u16( vk + 2 );
++        data_len = hive_u32( vk + 4 );
++        data_off = hive_u32( vk + 8 );
++        flags    = hive_u16( vk + 0x10 );
++        if (0x14 + name_len > vk_len) continue;
++        name = name_len ? hive_name( vk + 0x14, name_len, flags & 1 ) : NULL;
++        data = hive_value_data( h, data_len, data_off, &alloc, &out_len );
++        if (data)
++            RegSetValueExW( dst, name, 0, hive_u32( vk + 0x0c ), data, out_len );
++        HeapFree( GetProcessHeap(), 0, alloc );
++        HeapFree( GetProcessHeap(), 0, name );
++    }
++}
++
++static void hive_import_key( const struct hive_buf *h, DWORD nk_off, HKEY dst, int depth );
++
++/* walk a subkey list (lf/lh/li/ri) and import each referenced nk under @dst */
++static void hive_import_subkeys( const struct hive_buf *h, DWORD list_off, HKEY dst, int depth )
++{
++    const BYTE *list;
++    DWORD list_len, count, i, stride, entry;
++
++    if (!(list = hive_cell( h, list_off, &list_len )) || list_len < 4) return;
++    count = hive_u16( list + 2 );
++
++    if (list[0] == 'r' && list[1] == 'i')   /* index of subkey lists */
++    {
++        for (i = 0; i < count && 4 + i * 4 + 4 <= list_len; i++)
++            hive_import_subkeys( h, hive_u32( list + 4 + i * 4 ), dst, depth );
++        return;
++    }
++    if (list[0] == 'l' && (list[1] == 'f' || list[1] == 'h')) stride = 8;
++    else if (list[0] == 'l' && list[1] == 'i')                stride = 4;
++    else return;
++
++    for (i = 0; i < count; i++)
++    {
++        entry = 4 + i * stride;
++        if (entry + 4 > list_len) break;
++        hive_import_key( h, hive_u32( list + entry ), dst, depth );
++    }
++}
++
++/* import the nk key at @nk_off: create it under @dst (by its own name) and recurse */
++static void hive_import_key( const struct hive_buf *h, DWORD nk_off, HKEY parent, int depth )
++{
++    const BYTE *nk;
++    DWORD nk_len;
++    WORD flags, name_len;
++    WCHAR *name;
++    HKEY child;
++
++    if (depth > 512) return;
++    if (!(nk = hive_cell( h, nk_off, &nk_len )) || nk_len < 0x4c) return;
++    if (nk[0] != 'n' || nk[1] != 'k') return;
++    flags    = hive_u16( nk + 2 );
++    name_len = hive_u16( nk + 0x48 );
++    if (0x4c + name_len > nk_len) return;
++    if (!(name = hive_name( nk + 0x4c, name_len, flags & 0x20 ))) return;
++
++    if (!RegCreateKeyExW( parent, name, 0, NULL, REG_OPTION_VOLATILE,
++                          KEY_ALL_ACCESS, NULL, &child, NULL ))
++    {
++        hive_import_values( h, nk, nk_len, child );
++        if (hive_u32( nk + 0x14 ) && hive_u32( nk + 0x14 ) != 0xffffffff)
++            hive_import_subkeys( h, hive_u32( nk + 0x1c ), child, depth + 1 );
++        RegCloseKey( child );
++    }
++    HeapFree( GetProcessHeap(), 0, name );
+ }
+ 
+ /******************************************************************************
+  * RegLoadAppKeyW (kernelbase.@)
+  *
++ * Load a registry hive file as a private application key and return a handle
++ * to its root. The caller does not specify a mount point; we create a unique
++ * volatile key under HKLM, populate it from the (binary) hive and return it.
+  */
+ LSTATUS WINAPI RegLoadAppKeyW(const WCHAR *file, HKEY *result, REGSAM sam, DWORD options, DWORD reserved)
+ {
+-    FIXME("%s %p %lu %lu %lu: stub\n", wine_dbgstr_w(file), result, sam, options, reserved);
++    static LONG counter;
++    WCHAR name[64];
++    struct hive_buf h;
++    HANDLE fh;
++    HKEY root, mount;
++    DWORD read, root_off;
++    LONG ret;
++    BYTE *buf;
+ 
+-    if (!file || reserved)
++    TRACE("%s %p %lx %lx %lx\n", wine_dbgstr_w(file), result, sam, options, reserved);
++
++    if (!file || !result || reserved)
+         return ERROR_INVALID_PARAMETER;
+ 
+-    *result = (HKEY)0xdeadbeef;
++    fh = CreateFileW( file, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
++                      FILE_ATTRIBUTE_NORMAL, NULL );
++    if (fh == INVALID_HANDLE_VALUE) return GetLastError();
++
++    h.size = GetFileSize( fh, NULL );
++    if (h.size == INVALID_FILE_SIZE || h.size < HIVE_DATA_OFFSET + 0x20)
++    {
++        CloseHandle( fh );
++        return ERROR_NOT_REGISTRY_FILE;
++    }
++    if (!(buf = HeapAlloc( GetProcessHeap(), 0, h.size )))
++    {
++        CloseHandle( fh );
++        return ERROR_NOT_ENOUGH_MEMORY;
++    }
++    if (!ReadFile( fh, buf, h.size, &read, NULL ) || read != h.size)
++    {
++        HeapFree( GetProcessHeap(), 0, buf );
++        CloseHandle( fh );
++        return ERROR_NOT_REGISTRY_FILE;
++    }
++    CloseHandle( fh );
++    h.data = buf;
++
++    if (memcmp( buf, "regf", 4 ))   /* not a binary hive */
++    {
++        HeapFree( GetProcessHeap(), 0, buf );
++        return ERROR_NOT_REGISTRY_FILE;
++    }
++
++    if (!(root = get_special_root_hkey( HKEY_LOCAL_MACHINE )))
++    {
++        HeapFree( GetProcessHeap(), 0, buf );
++        return ERROR_INVALID_HANDLE;
++    }
++    swprintf( name, ARRAY_SIZE(name), L"_RegLoadAppKey_%08x_%08x",
++              GetCurrentProcessId(), (unsigned int)InterlockedIncrement( &counter ) );
++
++    if ((ret = RegCreateKeyExW( root, name, 0, NULL, REG_OPTION_VOLATILE,
++                                sam ? sam : KEY_ALL_ACCESS, NULL, &mount, NULL )))
++    {
++        HeapFree( GetProcessHeap(), 0, buf );
++        return ret;
++    }
++
++    /* root cell offset is stored in the base block at offset 0x24 */
++    root_off = hive_u32( buf + 0x24 );
++    {
++        const BYTE *rk;
++        DWORD rk_len;
++        if ((rk = hive_cell( &h, root_off, &rk_len )) && rk_len >= 0x4c && rk[0] == 'n' && rk[1] == 'k')
++        {
++            hive_import_values( &h, rk, rk_len, mount );
++            if (hive_u32( rk + 0x14 ) && hive_u32( rk + 0x14 ) != 0xffffffff)
++                hive_import_subkeys( &h, hive_u32( rk + 0x1c ), mount, 0 );
++        }
++    }
++
++    HeapFree( GetProcessHeap(), 0, buf );
++    *result = mount;
+     return ERROR_SUCCESS;
+ }
+ 
++/******************************************************************************
++ * RegLoadAppKeyA (kernelbase.@)
++ *
++ * See RegLoadAppKeyW.
++ */
++LSTATUS WINAPI RegLoadAppKeyA(const char *file, HKEY *result, REGSAM sam, DWORD options, DWORD reserved)
++{
++    UNICODE_STRING fileW = { 0, 0, NULL };
++    STRING fileA;
++    NTSTATUS status;
++    LONG ret;
++
++    if (!file || !result || reserved)
++        return ERROR_INVALID_PARAMETER;
++
++    RtlInitAnsiString( &fileA, file );
++    if ((status = RtlAnsiStringToUnicodeString( &fileW, &fileA, TRUE )))
++        return RtlNtStatusToDosError( status );
++
++    ret = RegLoadAppKeyW( fileW.Buffer, result, sam, options, reserved );
++    RtlFreeUnicodeString( &fileW );
++    return ret;
++}
++
+ 
+ /***********************************************************************
+  * DnsHostnameToComputerNameExW   (kernelbase.@)

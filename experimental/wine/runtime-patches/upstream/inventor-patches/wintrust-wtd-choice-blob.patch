@@ -1,0 +1,97 @@
+wintrust: Implement WTD_CHOICE_BLOB in SoftpubLoadMessage().
+
+SoftpubLoadMessage() only handles WTD_CHOICE_FILE and WTD_CHOICE_CATALOG and
+returns ERROR_INVALID_PARAMETER for everything else, so verifying a signature
+the caller already holds in memory is not possible.
+
+Decode the PKCS#7 message from WINTRUST_BLOB_INFO the same way the file path
+does, then build the certificate store from it. Checking that the signed
+content matches the subject object is the caller's business; only the signature
+and its certificate chain are validated here.
+
+The pbMemObject half is not upstream material: extracting the message from the
+subject object is the job of the subject interface package named by gSubject,
+and Wine has no AppX/MSIX one. Autodesk's AdIX/MSIX installer verifies its
+packages through WTD_CHOICE_BLOB and puts the .p7x there with no separate
+signed message - four byte "PKCX" magic followed by the DER PKCS#7 SignedData.
+
+Kept as one patch on purpose: the two halves touch the same lines, and the
+installer applies each patch on its own.
+
+diff --git a/dlls/wintrust/softpub.c b/dlls/wintrust/softpub.c
+index 609d240a..001f6543 100644
+--- a/dlls/wintrust/softpub.c
++++ b/dlls/wintrust/softpub.c
+@@ -595,6 +595,62 @@ error:
+     return err;
+ }
+ 
++/* Assumes data->pWintrustData->pBlob exists.  The caller hands the PKCS#7
++ * signed message over in memory rather than pointing at a file, so there is no
++ * subject interface package to ask and the message is decoded directly.
++ * Verifying that the signed content matches the subject object is left to the
++ * caller; only the signature and its certificate chain are checked here.
++ */
++static DWORD SOFTPUB_LoadBlobMessage(CRYPT_PROVIDER_DATA *data)
++{
++    WINTRUST_BLOB_INFO *blob = data->pWintrustData->pBlob;
++    const BYTE *msg;
++    DWORD msg_len;
++
++    if (!blob || !WVT_ISINSTRUCT(WINTRUST_BLOB_INFO, blob->cbStruct, pbMemSignedMsg))
++        return ERROR_INVALID_PARAMETER;
++
++    TRACE("subject %s, display name %s, %ld bytes object, %ld bytes message\n",
++     debugstr_guid(&blob->gSubject), debugstr_w(blob->pcwszDisplayName),
++     blob->cbMemObject, blob->cbMemSignedMsg);
++
++    if (blob->cbMemSignedMsg && blob->pbMemSignedMsg)
++    {
++        msg = blob->pbMemSignedMsg;
++        msg_len = blob->cbMemSignedMsg;
++    }
++    else if (blob->cbMemObject && blob->pbMemObject)
++    {
++        /* No separate signed message: the subject object is the signature
++         * itself, and on Windows the subject interface package named by
++         * gSubject extracts the message from it.  Wine has no AppX/MSIX SIP,
++         * so handle the one format seen here inline - a .p7x is the 4-byte
++         * "PKCX" magic followed by the DER PKCS#7 SignedData. */
++        msg = blob->pbMemObject;
++        msg_len = blob->cbMemObject;
++        if (msg_len > 4 && !memcmp(msg, "PKCX", 4))
++        {
++            msg += 4;
++            msg_len -= 4;
++        }
++    }
++    else
++    {
++        FIXME("no signed message for subject %s\n", debugstr_guid(&blob->gSubject));
++        return TRUST_E_NOSIGNATURE;
++    }
++
++    data->pPDSip->gSubject = blob->gSubject;
++    data->dwEncoding = X509_ASN_ENCODING | PKCS_7_ASN_ENCODING;
++    data->hMsg = CryptMsgOpenToDecode(data->dwEncoding, 0, 0, data->hProv, NULL, NULL);
++    if (!data->hMsg)
++        return GetLastError();
++    if (!CryptMsgUpdate(data->hMsg, msg, msg_len, TRUE))
++        return GetLastError();
++
++    return SOFTPUB_CreateStoreFromMessage(data);
++}
++
+ HRESULT WINAPI SoftpubLoadMessage(CRYPT_PROVIDER_DATA *data)
+ {
+     DWORD err = ERROR_SUCCESS;
+@@ -615,6 +671,9 @@ HRESULT WINAPI SoftpubLoadMessage(CRYPT_PROVIDER_DATA *data)
+     case WTD_CHOICE_CATALOG:
+         err = SOFTPUB_LoadCatalogMessage(data);
+         break;
++    case WTD_CHOICE_BLOB:
++        err = SOFTPUB_LoadBlobMessage(data);
++        break;
+     default:
+         FIXME("unimplemented for %ld\n", data->pWintrustData->dwUnionChoice);
+         err = ERROR_INVALID_PARAMETER;

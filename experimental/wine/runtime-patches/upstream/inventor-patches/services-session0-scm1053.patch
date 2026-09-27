@@ -1,0 +1,47 @@
+diff --git a/server/process.c b/server/process.c
+index f3aa6797662..216af9ca7c4 100644
+--- a/server/process.c
++++ b/server/process.c
+@@ -1478,6 +1478,24 @@ DECL_HANDLER(get_startup_info)
+ }
+ 
+ /* signal the end of the process initialization */
++/* check whether the process image path ends in "\services.exe" (case-insensitive) */
++static int image_is_service_manager( const WCHAR *image, data_size_t len )
++{
++    static const WCHAR services_exe[] =
++        {'\\','s','e','r','v','i','c','e','s','.','e','x','e'};
++    data_size_t i, count = len / sizeof(WCHAR);
++
++    if (!image || count < ARRAY_SIZE(services_exe)) return 0;
++    image += count - ARRAY_SIZE(services_exe);
++    for (i = 0; i < ARRAY_SIZE(services_exe); i++)
++    {
++        WCHAR c = image[i];
++        if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
++        if (c != services_exe[i]) return 0;
++    }
++    return 1;
++}
++
+ DECL_HANDLER(init_process_done)
+ {
+     struct process *process = current->process;
+@@ -1493,6 +1511,17 @@ DECL_HANDLER(init_process_done)
+ 
+     process->start_time = current_time;
+ 
++    /* The Windows service control manager runs in session 0, while interactive
++     * user processes run in another session (Wine uses 1).  Some services (e.g.
++     * Go's golang.org/x/sys/windows/svc.IsWindowsService) decide whether they
++     * are running as a service by checking that their parent is "services.exe"
++     * running in session 0; without this they fall back to console mode and
++     * never report SERVICE_RUNNING, so their SCM start times out (error 1053).
++     * Wine has no real session 0, so report the service manager itself in
++     * session 0 to make that detection succeed. */
++    if (image_is_service_manager( process->image, process->imagelen ))
++        process->session_id = 0;
++
+     init_process_tracing( process );
+     generate_startup_debug_events( process );
+     set_process_startup_state( process, STARTUP_DONE );

@@ -1,0 +1,69 @@
+{
+  "schema": 1,
+  "experiment": "standalone-host-wine",
+  "acceptance": "experimental-partial-controls-passed-full-operational-gate-incomplete",
+  "runner": {
+    "name": "fusion-wine-11.17",
+    "version": "wine-11.17",
+    "url": "https://github.com/Lolig4/Autodesk-Fusion-360-for-Linux/releases/download/Version_1/fusion-wine-build.tar.gz",
+    "sha256": "9ef47e25de30d52fb110b9f257d128755904ecfabda4a0c2ce43416e075a4479",
+    "size": 568123659,
+    "asset_uploaded": "2026-09-16",
+    "source_repository": "https://codeberg.org/Lolig4/Autodesk-Fusion-360-on-Linux",
+    "source_review_commit": "7da442d6af5ac2619e5151475d2be54efe6170bc",
+    "binary_source_attestation": "not-provided; patch/source correspondence reviewed separately",
+    "files": {
+      "bin/wine": "a664cab48d74a1fddef0d5a8ed48ffa5c24ee62baf1cc57a290211bc5f6e8544",
+      "bin/wineserver": "ee1401fdd0414fd9be583d6d8760da4fb5b9b0a79862a9f6f1e316de36cbe016",
+      "lib/wine/x86_64-unix/ntdll.so": "12f7f863badddb2be71e7817428f97d3d75a30c0f6902876e9af80af42e8f270",
+      "lib/wine/x86_64-unix/win32u.so": "79923250de21f0f7d5e6e98e95fc8ecbaf5381e79920f9873e08b0f2f57c8b9d",
+      "lib/wine/x86_64-unix/winex11.so": "6fdec486a07b4a3d178dcbb70b033d39f46f740da18ea9e8aa19db6cefe769ce",
+      "lib/wine/x86_64-unix/opengl32.so": "eec91ad917b7a890e274ada31aa495336d09d12ff18eb84501b9dd503eaff376",
+      "lib/wine/x86_64-unix/winevulkan.so": "7a8cc268a9ecf6b4d76fc25697a6c7d66f17c09f23e2dd2a43f503115f01141a"
+    },
+    "executables": {
+      "bin/wine": "a664cab48d74a1fddef0d5a8ed48ffa5c24ee62baf1cc57a290211bc5f6e8544",
+      "bin/wineserver": "ee1401fdd0414fd9be583d6d8760da4fb5b9b0a79862a9f6f1e316de36cbe016"
+    }
+  },
+  "fusion": {
+    "version": "2705.1.25",
+    "deployment": "c657666a51cec7a9bbd042e10872bcd9532508a8"
+  },
+  "renderer": "Fusion DirectX 11 through preserved DXVK; Qt Direct3D11; Radeon 8060S verified; corrected Normal selection controls passed; full operational gate incomplete",
+  "windows_user": "steamuser",
+  "native_compiler": {
+    "registry_hive": "HKCU",
+    "registry_key": "Software\\Wine\\AppDefaults\\Fusion360.exe\\DllOverrides",
+    "registry_value": "d3dcompiler_47",
+    "override": "native,builtin",
+    "relative_path": "d3dcompiler_v2/d3dcompiler_47.dll",
+    "file_version": "10.0.14393.33",
+    "size": 4483648,
+    "sha256": "c349f3510ccce2df194dfd88829a9a790c8028eddedbecd54485ea92c1c771f7",
+    "system32_copy": {
+      "relative_path": "drive_c/windows/system32/d3dcompiler_47.dll",
+      "size": 4483648,
+      "sha256": "c349f3510ccce2df194dfd88829a9a790c8028eddedbecd54485ea92c1c771f7"
+    },
+    "source": "Microsoft compiler shipped with the registered Autodesk Fusion application; not redistributed"
+  },
+  "runtime_environment": {
+    "WINE_X11_ARGB_SHAPE_INPUT": "1",
+    "WINE_X11_ARGB_CONSTANT_ALPHA": "1"
+  },
+  "launch_environment": {
+    "QSG_RHI_BACKEND": "d3d11"
+  },
+  "runtime_overlay": {
+    "id": "wine-11.17-omarchy-alpha-v1",
+    "source_manifest": "runtime-patches/manifest.json",
+    "source_manifest_sha256": "33f233ca8ca59413a76444016b262b0ce0628d860064eec3e424e4c5a8877599",
+    "module": {
+      "target": "lib/wine/x86_64-unix/winex11.so",
+      "original_sha256": "05d4cc19270f43e2cf88b8fd76da07523eef63d2f428c5fe535bab371c5c1d7a",
+      "sha256": "6fdec486a07b4a3d178dcbb70b033d39f46f740da18ea9e8aa19db6cefe769ce"
+    },
+    "acceptance": "experimental-partial-controls-passed-full-operational-gate-incomplete"
+  }
+}

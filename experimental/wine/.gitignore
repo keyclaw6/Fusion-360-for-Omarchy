@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.log
+*.png
+*.f3d
+*.step
+*.stp
+*.dll
+*.exe
+*.so
+*.f3z
+*.tar.gz
+*.tar.xz
+.venv/

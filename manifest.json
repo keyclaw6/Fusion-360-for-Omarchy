@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "kab.fusion360",
+  "name": "Fusion 360 for Omarchy",
+  "version": "0.1.0",
+  "author": "Fusion 360 for Omarchy contributors",
+  "description": "Open Autodesk Fusion and inspect its local launcher status and diagnostics.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Main.qml"
+  },
+  "barWidget": {
+    "displayName": "Fusion 360",
+    "description": "Launch Fusion and check the separately installed desktop integration.",
+    "category": "Productivity",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  },
+  "license": "MIT"
+}

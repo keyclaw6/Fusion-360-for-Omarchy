@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+from pathlib import Path
+import os
+import sys
+
+sys.dont_write_bytecode = True
+package = Path(__file__).resolve().parent.parent
+if (package / "fusion-wine-11.17").is_dir():
+    os.environ.setdefault("FUSION360_WINE_STATE", str(package))
+sys.path.insert(0, str(package / "lib"))
+from fusion_wine import main
+
+if len(sys.argv) != 2:
+    raise SystemExit("Expected one Autodesk callback.")
+raise SystemExit(main(["auth", "--", sys.argv[1]]))

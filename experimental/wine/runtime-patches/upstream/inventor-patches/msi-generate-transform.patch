@@ -1,0 +1,371 @@
+diff --git a/dlls/msi/msipriv.h b/dlls/msi/msipriv.h
+index 0efc367c..c7f900a3 100644
+--- a/dlls/msi/msipriv.h
++++ b/dlls/msi/msipriv.h
+@@ -797,6 +797,7 @@ extern VOID msi_destroy_stringtable( string_table *st );
+ extern const WCHAR *msi_string_lookup( const string_table *st, UINT id, int *len );
+ extern HRESULT msi_init_string_table( IStorage *stg );
+ extern string_table *msi_load_string_table( IStorage *stg, UINT *bytes_per_strref );
++extern string_table *msi_init_string_table_mem( UINT codepage );
+ extern UINT msi_save_string_table( const string_table *st, IStorage *storage, UINT *bytes_per_strref );
+ extern UINT msi_get_string_table_codepage( const string_table *st );
+ extern UINT msi_set_string_table_codepage( string_table *st, UINT codepage );
+@@ -812,6 +813,7 @@ extern UINT write_stream_data( IStorage *stg, LPCWSTR stname,
+ 
+ /* transform functions */
+ extern UINT msi_table_apply_transform( MSIDATABASE *db, IStorage *stg, int err_cond );
++extern UINT msi_database_generate_transform( MSIDATABASE *db, MSIDATABASE *db_ref, IStorage *stg );
+ extern UINT MSI_DatabaseApplyTransformW( MSIDATABASE *db,
+                  LPCWSTR szTransformFile, int iErrorCond );
+ extern void append_storage_to_db( MSIDATABASE *db, IStorage *stg );
+diff --git a/dlls/msi/msiquery.c b/dlls/msi/msiquery.c
+index 62d17998..71f2c3e8 100644
+--- a/dlls/msi/msiquery.c
++++ b/dlls/msi/msiquery.c
+@@ -944,15 +944,61 @@ UINT WINAPI MsiDatabaseApplyTransformA( MSIHANDLE hdb, const char *transform, in
+ UINT WINAPI MsiDatabaseGenerateTransformA( MSIHANDLE hdb, MSIHANDLE hdbref, const char *szTransformFile,
+                                            int iReserved1, int iReserved2 )
+ {
+-    FIXME( "%lu, %lu, %s, %d, %d\n", hdb, hdbref, debugstr_a(szTransformFile), iReserved1, iReserved2 );
+-    return ERROR_CALL_NOT_IMPLEMENTED;
++    WCHAR *wstr = NULL;
++    UINT r;
++
++    TRACE( "%lu, %lu, %s, %d, %d\n", hdb, hdbref, debugstr_a(szTransformFile), iReserved1, iReserved2 );
++
++    if (szTransformFile && !(wstr = strdupAtoW( szTransformFile ))) return ERROR_OUTOFMEMORY;
++    r = MsiDatabaseGenerateTransformW( hdb, hdbref, wstr, iReserved1, iReserved2 );
++    free( wstr );
++    return r;
+ }
+ 
+ UINT WINAPI MsiDatabaseGenerateTransformW( MSIHANDLE hdb, MSIHANDLE hdbref, const WCHAR *szTransformFile,
+                                            int iReserved1, int iReserved2 )
+ {
+-    FIXME( "%lu, %lu, %s, %d, %d\n", hdb, hdbref, debugstr_w(szTransformFile), iReserved1, iReserved2 );
+-    return ERROR_CALL_NOT_IMPLEMENTED;
++    MSIDATABASE *db, *db_ref;
++    IStorage *stg = NULL;
++    HRESULT hr;
++    UINT r;
++
++    TRACE( "%lu, %lu, %s, %d, %d\n", hdb, hdbref, debugstr_w(szTransformFile), iReserved1, iReserved2 );
++
++    if (iReserved1 || iReserved2)
++        return ERROR_INVALID_PARAMETER;
++
++    if (!(db = msihandle2msiinfo( hdb, MSIHANDLETYPE_DATABASE )))
++        return ERROR_INVALID_HANDLE;
++    if (!(db_ref = msihandle2msiinfo( hdbref, MSIHANDLETYPE_DATABASE )))
++    {
++        msiobj_release( &db->hdr );
++        return ERROR_INVALID_HANDLE;
++    }
++
++    /* a NULL transform file means the caller only wants to know whether the
++     * two databases differ (msi_database_generate_transform returns
++     * ERROR_NO_DATA when they are identical) */
++    if (szTransformFile)
++    {
++        hr = StgCreateDocfile( szTransformFile,
++                               STGM_CREATE|STGM_DIRECT|STGM_READWRITE|STGM_SHARE_EXCLUSIVE, 0, &stg );
++        if (FAILED( hr ))
++        {
++            WARN( "failed to create transform file %s: %#lx\n", debugstr_w(szTransformFile), hr );
++            r = ERROR_FUNCTION_FAILED;
++            goto done;
++        }
++        IStorage_SetClass( stg, &CLSID_MsiTransform );
++    }
++
++    r = msi_database_generate_transform( db, db_ref, stg );
++
++done:
++    if (stg) IStorage_Release( stg );
++    msiobj_release( &db_ref->hdr );
++    msiobj_release( &db->hdr );
++    return r;
+ }
+ 
+ UINT WINAPI MsiDatabaseCommit( MSIHANDLE hdb )
+diff --git a/dlls/msi/string.c b/dlls/msi/string.c
+index 38381b8b..8925e99f 100644
+--- a/dlls/msi/string.c
++++ b/dlls/msi/string.c
+@@ -104,6 +104,12 @@ static string_table *init_stringtable( int entries, UINT codepage )
+     return st;
+ }
+ 
++/* create an empty in-memory string table (used when generating a transform) */
++string_table *msi_init_string_table_mem( UINT codepage )
++{
++    return init_stringtable( 1, codepage );
++}
++
+ VOID msi_destroy_stringtable( string_table *st )
+ {
+     UINT i;
+diff --git a/dlls/msi/table.c b/dlls/msi/table.c
+index 089f2027..c07436f1 100644
+--- a/dlls/msi/table.c
++++ b/dlls/msi/table.c
+@@ -3398,6 +3398,259 @@ err:
+     return ERROR_SUCCESS;
+ }
+ 
++/*
++ * Transform generation (MsiDatabaseGenerateTransform)
++ *
++ * Build a transform storage describing how to turn db_ref into db.  The
++ * generated transform, applied to db_ref, yields db.  Implemented for tables
++ * present in both databases with identical schema and string/integer columns
++ * (the common case, e.g. changing Property values).  Added/removed tables and
++ * binary/stream columns are not handled yet.
++ */
++
++struct gen_cell { const WCHAR *str; int len; UINT ival; BOOL is_str; };
++
++struct gen_xrow { struct list entry; USHORT mask; UINT *vals; };
++
++struct gen_xtable
++{
++    struct list entry;
++    WCHAR *name;
++    struct table_view *tv;   /* view on db (for column metadata + widths) */
++    UINT num_cols;
++    struct list xrows;
++};
++
++static BOOL gen_col_is_string( UINT type )
++{
++    return (type & MSITYPE_STRING) && !MSITYPE_IS_BINARY( type );
++}
++
++static UINT gen_fetch_cell( struct table_view *tv, UINT row, UINT col, struct gen_cell *c )
++{
++    UINT val = 0, r;
++
++    r = TABLE_fetch_int( &tv->view, row, col, &val );
++    if (r != ERROR_SUCCESS) return r;
++    if (gen_col_is_string( tv->columns[col - 1].type ))
++    {
++        c->is_str = TRUE;
++        c->str = val ? msi_string_lookup( tv->db->strings, val, &c->len ) : NULL;
++        if (!c->str) { c->str = L""; c->len = 0; }
++    }
++    else
++    {
++        c->is_str = FALSE;
++        c->ival = val;
++    }
++    return ERROR_SUCCESS;
++}
++
++static BOOL gen_cell_equal( const struct gen_cell *a, const struct gen_cell *b )
++{
++    if (a->is_str != b->is_str) return FALSE;
++    if (a->is_str)
++        return a->len == b->len && !memcmp( a->str, b->str, a->len * sizeof(WCHAR) );
++    return a->ival == b->ival;
++}
++
++UINT msi_database_generate_transform( MSIDATABASE *db, MSIDATABASE *db_ref, IStorage *stg )
++{
++    string_table *strings;
++    struct list tables;
++    struct gen_xtable *xt, *xt2;
++    struct gen_xrow *xr, *xr2;
++    MSIQUERY *vt = NULL;
++    MSIRECORD *rec = NULL;
++    UINT bytes_per_strref = 0, r = ERROR_SUCCESS, changes = 0;
++    UINT i, rn, rr;
++
++    TRACE( "%p %p %p\n", db, db_ref, stg );
++
++    strings = msi_init_string_table_mem( msi_get_string_table_codepage( db_ref->strings ) );
++    if (!strings) return ERROR_OUTOFMEMORY;
++    list_init( &tables );
++
++    r = MSI_OpenQuery( db_ref, &vt, L"SELECT `Name` FROM `_Tables`" );
++    if (r != ERROR_SUCCESS) goto done;
++    r = MSI_ViewExecute( vt, NULL );
++    if (r != ERROR_SUCCESS) goto done;
++
++    while (MSI_ViewFetch( vt, &rec ) == ERROR_SUCCESS)
++    {
++        WCHAR name[256];
++        DWORD sz = ARRAY_SIZE( name );
++        struct table_view *tv = NULL, *tvr = NULL;
++        UINT nrow_new, nrow_ref, *ref_used = NULL;
++        BOOL unusable = FALSE;
++
++        MSI_RecordGetStringW( rec, 1, name, &sz );
++        msiobj_release( &rec->hdr );
++        rec = NULL;
++
++        if (name[0] == '_') continue;
++        if (!TABLE_Exists( db, name )) { WARN( "dropped table %s not handled\n", debugstr_w(name) ); continue; }
++
++        if (TABLE_CreateView( db, name, (MSIVIEW **)&tv ) != ERROR_SUCCESS) continue;
++        if (tv->view.ops->execute( &tv->view, NULL ) != ERROR_SUCCESS) { tv->view.ops->delete( &tv->view ); continue; }
++        if (TABLE_CreateView( db_ref, name, (MSIVIEW **)&tvr ) != ERROR_SUCCESS) { tv->view.ops->delete( &tv->view ); continue; }
++        if (tvr->view.ops->execute( &tvr->view, NULL ) != ERROR_SUCCESS)
++        { tv->view.ops->delete( &tv->view ); tvr->view.ops->delete( &tvr->view ); continue; }
++
++        if (tv->num_cols != tvr->num_cols) unusable = TRUE;
++        for (i = 0; i < tv->num_cols; i++)
++            if (MSITYPE_IS_BINARY( tv->columns[i].type )) unusable = TRUE;
++        if (unusable)
++        {
++            WARN( "table %s (binary cols or schema mismatch) not handled\n", debugstr_w(name) );
++            tv->view.ops->delete( &tv->view );
++            tvr->view.ops->delete( &tvr->view );
++            continue;
++        }
++
++        xt = calloc( 1, sizeof(*xt) );
++        xt->name = wcsdup( name );
++        xt->tv = tv;
++        xt->num_cols = tv->num_cols;
++        list_init( &xt->xrows );
++        list_add_tail( &tables, &xt->entry );
++
++        nrow_new = tv->table->row_count;
++        nrow_ref = tvr->table->row_count;
++        ref_used = calloc( nrow_ref ? nrow_ref : 1, sizeof(UINT) );
++
++        for (rn = 0; rn < nrow_new; rn++)
++        {
++            UINT match = ~0u;
++            BOOL diff = TRUE;
++
++            for (rr = 0; rr < nrow_ref; rr++)
++            {
++                BOOL eq = TRUE;
++                if (ref_used[rr]) continue;
++                for (i = 0; i < tv->num_cols && eq; i++)
++                {
++                    struct gen_cell a, b;
++                    if (~tv->columns[i].type & MSITYPE_KEY) continue;
++                    gen_fetch_cell( tv, rn, i + 1, &a );
++                    gen_fetch_cell( tvr, rr, i + 1, &b );
++                    if (!gen_cell_equal( &a, &b )) eq = FALSE;
++                }
++                if (eq) { match = rr; break; }
++            }
++            if (match != ~0u)
++            {
++                diff = FALSE;
++                for (i = 0; i < tv->num_cols && !diff; i++)
++                {
++                    struct gen_cell a, b;
++                    gen_fetch_cell( tv, rn, i + 1, &a );
++                    gen_fetch_cell( tvr, match, i + 1, &b );
++                    if (!gen_cell_equal( &a, &b )) diff = TRUE;
++                }
++                ref_used[match] = 1;
++            }
++            if (!diff) continue;
++
++            xr = calloc( 1, sizeof(*xr) );
++            xr->mask = (tv->num_cols << 8) | 1;
++            xr->vals = calloc( tv->num_cols, sizeof(UINT) );
++            for (i = 0; i < tv->num_cols; i++)
++            {
++                struct gen_cell a;
++                gen_fetch_cell( tv, rn, i + 1, &a );
++                if (a.is_str) xr->vals[i] = a.len ? msi_add_string( strings, a.str, a.len, TRUE ) : 0;
++                else xr->vals[i] = a.ival;
++            }
++            list_add_tail( &xt->xrows, &xr->entry );
++            changes++;
++        }
++
++        for (rr = 0; rr < nrow_ref; rr++)
++        {
++            if (ref_used[rr]) continue;
++            xr = calloc( 1, sizeof(*xr) );
++            xr->mask = 0;
++            xr->vals = calloc( tv->num_cols, sizeof(UINT) );
++            for (i = 0; i < tv->num_cols; i++)
++            {
++                struct gen_cell b;
++                if (~tv->columns[i].type & MSITYPE_KEY) continue;
++                gen_fetch_cell( tvr, rr, i + 1, &b );
++                if (b.is_str) xr->vals[i] = b.len ? msi_add_string( strings, b.str, b.len, TRUE ) : 0;
++                else xr->vals[i] = b.ival;
++            }
++            list_add_tail( &xt->xrows, &xr->entry );
++            changes++;
++        }
++
++        free( ref_used );
++        tvr->view.ops->delete( &tvr->view );
++    }
++
++    /* identical databases: no transform (matches native MsiDatabaseGenerateTransform) */
++    if (!changes) { r = ERROR_NO_DATA; goto done; }
++    /* szTransformFile was NULL: caller only wanted to know whether they differ */
++    if (!stg) { r = ERROR_SUCCESS; goto done; }
++
++    r = msi_save_string_table( strings, stg, &bytes_per_strref );
++    if (r != ERROR_SUCCESS) goto done;
++
++    LIST_FOR_EACH_ENTRY( xt, &tables, struct gen_xtable, entry )
++    {
++        BYTE *buf = NULL;
++        UINT cap = 0, len = 0;
++
++        LIST_FOR_EACH_ENTRY( xr, &xt->xrows, struct gen_xrow, entry )
++        {
++            UINT need = 2, n, k, v;
++
++            for (i = 0; i < xt->num_cols; i++)
++            {
++                UINT type = xt->tv->columns[i].type;
++                if (!((xr->mask & 1) || (type & MSITYPE_KEY) || ((1u << i) & xr->mask))) continue;
++                need += gen_col_is_string( type ) ? bytes_per_strref
++                        : bytes_per_column( xt->tv->db, &xt->tv->columns[i], bytes_per_strref );
++            }
++            if (len + need > cap) { cap = (len + need) * 2 + 64; buf = realloc( buf, cap ); }
++
++            buf[len++] = xr->mask & 0xff;
++            buf[len++] = (xr->mask >> 8) & 0xff;
++            for (i = 0; i < xt->num_cols; i++)
++            {
++                UINT type = xt->tv->columns[i].type;
++                if (!((xr->mask & 1) || (type & MSITYPE_KEY) || ((1u << i) & xr->mask))) continue;
++                n = gen_col_is_string( type ) ? bytes_per_strref
++                    : bytes_per_column( xt->tv->db, &xt->tv->columns[i], bytes_per_strref );
++                v = xr->vals[i];
++                for (k = 0; k < n; k++) buf[len++] = (v >> (k * 8)) & 0xff;
++            }
++        }
++
++        if (buf && len) write_stream_data( stg, xt->name, buf, len, TRUE );
++        free( buf );
++    }
++
++done:
++    if (rec) msiobj_release( &rec->hdr );
++    if (vt) msiobj_release( &vt->hdr );
++    LIST_FOR_EACH_ENTRY_SAFE( xt, xt2, &tables, struct gen_xtable, entry )
++    {
++        LIST_FOR_EACH_ENTRY_SAFE( xr, xr2, &xt->xrows, struct gen_xrow, entry )
++        {
++            list_remove( &xr->entry );
++            free( xr->vals );
++            free( xr );
++        }
++        list_remove( &xt->entry );
++        if (xt->tv) xt->tv->view.ops->delete( &xt->tv->view );
++        free( xt->name );
++        free( xt );
++    }
++    msi_destroy_stringtable( strings );
++    return r;
++}
++
+ /*
+  * msi_table_apply_transform
+  *

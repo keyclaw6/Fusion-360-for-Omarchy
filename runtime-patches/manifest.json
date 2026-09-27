@@ -1,0 +1,107 @@
+{
+  "schema": 2,
+  "id": "ge-proton11-7-omarchy-x11-v3",
+  "acceptance": "accepted-tested-design-workflows",
+  "required_environment": {
+    "WINE_X11_ARGB_SHAPE_INPUT": "1",
+    "WINE_X11_ARGB_CONSTANT_ALPHA": "1",
+    "QSG_RHI_BACKEND": "opengl",
+    "WINE_X11_VULKAN_PRESENT_WAIT": "1"
+  },
+  "runner": {
+    "name": "GE-Proton11-7-x86_64",
+    "archive_sha256": "c5448b76a230384e2d7bc6beb5ccb97bafb7e2c3b6c527cb03a1a546bbcb00a0",
+    "source_repository": "https://github.com/GloriousEggroll/proton-ge-custom.git",
+    "source_tag": "GE-Proton11-7",
+    "source_commit": "c191f35dcebbeccfacd3b4c6f6eea026e588c1c2",
+    "preparation_script": "patches/protonprep-valve-staging.sh",
+    "preparation_script_sha256": "e54ce5540e3677025d37341be47d950fab8fd2c17b3a36042e70b2745cd76f04"
+  },
+  "wine": {
+    "source_commit": "46b29104e3741fe23bf5e2547196a253aab88c89",
+    "staging_commit": "6cc805ea57132eeaf44764e9213823c9b8d0d300",
+    "restore_configure_commit": "e813ca5771658b00875924ab88d525322e50d39f",
+    "gdi_driver_version": 111,
+    "gdi_vtable_size": 1240
+  },
+  "link_inputs": {
+    "ntdll.so": "cc07acc92fd54ae09a154d87fe6e0aab3b713abaad09816da39bcde11b0d45b3"
+  },
+  "sdk": {
+    "registry": "https://registry.gitlab.steamos.cloud",
+    "repository": "proton/steamrt4/sdk/x86_64",
+    "tag": "4.0.20260714.251823-0",
+    "manifest_sha256": "6c1789cad862fd8ed9d46d71bbf8752bb7cb2336ab5e9680c0f0e3e7c88d77f1",
+    "compiler": "GCC (Debian 14.2.0-19) 14.2.0"
+  },
+  "patches": [
+    {
+      "file": "owned-tool-windows.patch",
+      "sha256": "906aa4406dd6cba74b5ad29f0bfa13fad217e387d76843b7d44eaee2931c4e5a",
+      "origin": "https://codeberg.org/Lolig4/Autodesk-Fusion-360-on-Linux/src/commit/7da442d6af5ac2619e5151475d2be54efe6170bc/files/setup/data/fusion-patches/winex11-owned-tool-windows.patch",
+      "license": "MIT",
+      "notice": "LICENSE.Lolig4-MIT"
+    },
+    {
+      "file": "argb-input-shape.patch",
+      "sha256": "fe8a061097ee5a6c9aba9e1469365f3ee3e8e10b593ca82783ca1fbd3a6f2914",
+      "origin": "Local implementation based on Wine surface-flush code and direct X11/XComposite pixel evidence",
+      "license": "LGPL-2.1-or-later",
+      "notice": "LICENSE.Wine-LGPL-2.1"
+    },
+    {
+      "file": "argb-constant-alpha.patch",
+      "sha256": "dae44a2e590ab1159649b38a56ada0cd6bc3e9754cd25cdcdbe397f45a87b590",
+      "origin": "Local implementation of GDI constant-alpha upload for compositors without _NET_WM_WINDOW_OPACITY support",
+      "license": "LGPL-2.1-or-later",
+      "notice": "LICENSE.Wine-LGPL-2.1"
+    },
+    {
+      "file": "vulkan-present-wait.patch",
+      "sha256": "413eae6f6955d7a44014b8de5737f8793562c46a727ccc4c3746227de652c694",
+      "origin": "Local implementation based on GE Wine offscreen presentation, Mesa X11 WSI worker ordering, and passive source-versus-parent Fusion captures",
+      "license": "LGPL-2.1-or-later",
+      "notice": "LICENSE.Wine-LGPL-2.1"
+    }
+  ],
+  "validation": {
+    "compile_werror": true,
+    "abi_exports_and_dependencies_match": true,
+    "installed_runtime_relocations": "Both freshly built modules checked together against actual steamrt4 4.0.20260914.260627; private SONAME links used for immutable platform libraries; no missing libraries or unresolved symbols",
+    "initial_palette_test": "Managed UTILITY windows; Preferences and profile menu respond to one click",
+    "initial_alpha_test": "Browser backing sample: 92000 alpha-zero pixels, 0 opaque-black pixels; bounding rectangle full; input shape 36 rectangles",
+    "full_acceptance": "Accepted on 2026-09-27 for the independently tested Design/modeling, rendering, cloud/local persistence, representative assembly navigation and desktop workflows. Final installed palette focus/monitor integration passed repeated switching, native input, monitor movement and a third authenticated cold launch. Shortcut observations, untested workspaces and performance-parity limits remain explicit in docs/operational-review.md; this is not universal native-platform certification.",
+    "historical_selection_verdict": "The earlier review rejected native face highlighting after feature editing and retained v3 without promotion. A corrected identified-face control subsequently passed before and after native editing with Normal already selected, making the blanket rejection premature; see docs/ge-normal-retest.md.",
+    "initial_constant_alpha_test": "Save backdrop depth32, pixel 0x4c000000, no redundant opacity property; gray dimming and opaque Save dialog observed",
+    "recipe_rebuild": "2026-09-26: new exact source checkout through schema2 build-overlay.py, verified SDK reused, both modified modules compiled together, exact locked output hashes reproduced; only ntdll is prebuilt",
+    "initial_ui_composition_test": "Historical v2 QSG_RHI_BACKEND=d3d11 passed grid and workplane checks, but ordinary WINEDEBUG=-all launch subsequently produced a gray native model canvas, including with stock modules. This configuration was not accepted.",
+    "configuration_revision": "V3 changes only Qt Quick composition to QSG_RHI_BACKEND=opengl, preserving both rebuilt module hashes and native DirectX 11 rendering. Native startup, grid, workplanes, toolbar, modeling and corrected identified-face selection before/after native feature editing pass at WINEDEBUG=-all.",
+    "presentation_regression": "Audited v2 private win32u: workplanes and four grid toggles correct at the first timed capture after 350ms requested settle, approximately 0.68-0.72s from input to capture, without intervening motion or MCP wakeup; source helpers and actual mixed host/managed repack path pass ASan+UBSan",
+    "latency_configuration": "Cold A/B rejected DXVK_CONFIG=dxgi.syncInterval = 0: default 115 canvas presents/2.561s, interval median22ms, wait median21ms; interval0 116/2.565s, interval median22ms, wait median22ms. Both workplanes/grid checks passed at the first timed capture after 350ms requested settle, without intervening input or MCP. No measurable improvement; retain default DXVK synchronization and exact four-key runtime environment.",
+    "submitted_present_safety": "Only actual successful host submissions authorize a finite submitted-ID wait; enabled feature/extension and wait2 creation flag required; ID2 preserved through mixed host/managed repacking; timeout disables future waits per swapchain",
+    "source_sanitizers": "Both committed portable tests passed on the fresh schema2 build under ASan+UBSan; actual alpha functions and present/repack/host-submit code extracted from built source",
+    "build_validation": "Complete: fresh two-module recipe reproduces both pinned hashes; sanitizer tests, ABI/export/dependency comparisons and matched-pair SDK/installed-runtime relocations passed. Build validation is separate from the current installed application decision in docs/operational-review.md."
+  },
+  "modules": [
+    {
+      "target": "files/lib/wine/x86_64-unix/winex11.so",
+      "original_sha256": "5acbf619a5d13b4d38cde3adba9724e5de5427a117caf0e2336864e20281f080",
+      "sha256": "6b5f680717f8e1db59039eeb50a953ac7703d6a7e88cd1e891c345e372020f1f"
+    },
+    {
+      "target": "files/lib/wine/x86_64-unix/win32u.so",
+      "original_sha256": "7fd98d9364404e7fedb800df54d01053af0ac015d63b8c8967d145e302a57d8b",
+      "sha256": "201ef0e0f4d48dfc093a16ffdd221c0ef37427e35ec59238756e0dc54c134d38"
+    }
+  ],
+  "source_files": {
+    "dlls/win32u/vulkan.c": {
+      "original_sha256": "e7414b0def11b9ecb3b602cf1cb407e5716d37b2f894d7feed7b4ab8e8036b38",
+      "sha256": "d5f97130f4de443a690736e42b9b2f26915a1c265b9a9a9028b630f49db3cc7d"
+    },
+    "include/wine/vulkan_driver.h": {
+      "sha256": "b8bda905b8bd665ebd315b9fa1f729aa09d1e29ea0869d888b51719da37efa6d",
+      "modified": false
+    }
+  }
+}

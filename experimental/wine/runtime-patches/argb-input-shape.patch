@@ -1,0 +1,40 @@
+diff --git i/dlls/winex11.drv/bitblt.c w/dlls/winex11.drv/bitblt.c
+index b6e08ea..5dc3199 100644
+--- i/dlls/winex11.drv/bitblt.c
++++ w/dlls/winex11.drv/bitblt.c
+@@ -1832,8 +1832,25 @@ static BOOL x11drv_surface_flush( struct window_surface *window_surface, const R
+     if (shape_changed)
+     {
+ #ifdef HAVE_LIBXSHAPE
+-        if (!shape_bits)
++        const char *input_shape_opt = getenv( "WINE_X11_ARGB_SHAPE_INPUT" );
++        BOOL input_shape_enabled = input_shape_opt && !strcmp( input_shape_opt, "1" );
++        BOOL argb_input_shape = input_shape_enabled && alpha_mask && ximage->depth == 32;
++        int shape_kind = ShapeBounding;
++
++        /* Keep alpha-zero pixels writable in the redirected ARGB pixmap.
++         * Bounding shapes clip uploads and can preserve opaque stale pixels.
++         * Use the alpha mask for hit testing while retaining a full bounding
++         * rectangle. This only changes explicitly opted-in ARGB surfaces. */
++        if (argb_input_shape)
++        {
+             XShapeCombineMask( gdi_display, surface->window, ShapeBounding, 0, 0, None, ShapeSet );
++            shape_kind = ShapeInput;
++        }
++        else if (input_shape_enabled)
++            XShapeCombineMask( gdi_display, surface->window, ShapeInput, 0, 0, None, ShapeSet );
++
++        if (!shape_bits)
++            XShapeCombineMask( gdi_display, surface->window, shape_kind, 0, 0, None, ShapeSet );
+         else
+         {
+             struct gdi_image_bits bits = {.ptr = (void *)shape_bits};
+@@ -1842,7 +1859,7 @@ static BOOL x11drv_surface_flush( struct window_surface *window_surface, const R
+ 
+             vis.depth = 1;
+             shape = create_pixmap_from_image( 0, &vis, shape_info, &bits, DIB_RGB_COLORS );
+-            XShapeCombineMask( gdi_display, surface->window, ShapeBounding, 0, 0, shape, ShapeSet );
++            XShapeCombineMask( gdi_display, surface->window, shape_kind, 0, 0, shape, ShapeSet );
+             XFreePixmap( gdi_display, shape );
+         }
+ #endif /* HAVE_LIBXSHAPE */

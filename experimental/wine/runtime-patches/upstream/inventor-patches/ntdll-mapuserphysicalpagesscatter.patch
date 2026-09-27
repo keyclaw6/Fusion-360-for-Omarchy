@@ -1,0 +1,119 @@
+diff --git a/dlls/ntdll/ntdll.spec b/dlls/ntdll/ntdll.spec
+index 2c66313e..2910f3da 100644
+--- a/dlls/ntdll/ntdll.spec
++++ b/dlls/ntdll/ntdll.spec
+@@ -273,7 +273,7 @@
+ @ stdcall -syscall NtMakePermanentObject(long)
+ @ stdcall -syscall NtMakeTemporaryObject(long)
+ # @ stub NtMapUserPhysicalPages
+-@ stub -syscall=0x0003 NtMapUserPhysicalPagesScatter
++@ stdcall -syscall=0x0003 NtMapUserPhysicalPagesScatter(ptr long ptr)
+ @ stdcall -syscall=0x0028 NtMapViewOfSection(long long ptr long long ptr ptr long long long)
+ @ stdcall -syscall NtMapViewOfSectionEx(long long ptr ptr ptr long long ptr long)
+ # @ stub NtModifyBootEntry
+@@ -1354,7 +1354,7 @@
+ @ stdcall -private ZwMakePermanentObject(long) NtMakePermanentObject
+ @ stdcall -private ZwMakeTemporaryObject(long) NtMakeTemporaryObject
+ # @ stub ZwMapUserPhysicalPages
+-@ stdcall -private ZwMapUserPhysicalPagesScatter() NtMapUserPhysicalPagesScatter
++@ stdcall -private ZwMapUserPhysicalPagesScatter(ptr long ptr) NtMapUserPhysicalPagesScatter
+ @ stdcall -private ZwMapViewOfSection(long long ptr long long ptr ptr long long long) NtMapViewOfSection
+ @ stdcall -private ZwMapViewOfSectionEx(long long ptr ptr ptr long long ptr long) NtMapViewOfSectionEx
+ # @ stub ZwModifyBootEntry
+diff --git a/dlls/ntdll/ntsyscalls.h b/dlls/ntdll/ntsyscalls.h
+index 05b121f2..7e3fc219 100644
+--- a/dlls/ntdll/ntsyscalls.h
++++ b/dlls/ntdll/ntsyscalls.h
+@@ -4,7 +4,7 @@
+     SYSCALL_ENTRY( 0x0000, NtAccessCheck, 32 ) \
+     SYSCALL_ENTRY( 0x0001, NtWorkerFactoryWorkerReady, 4 ) \
+     SYSCALL_ENTRY( 0x0002, NtAcceptConnectPort, 24 ) \
+-    SYSCALL_ENTRY( 0x0003, NtMapUserPhysicalPagesScatter, 0 ) \
++    SYSCALL_ENTRY( 0x0003, NtMapUserPhysicalPagesScatter, 12 ) \
+     SYSCALL_ENTRY( 0x0004, NtWaitForSingleObject, 12 ) \
+     SYSCALL_ENTRY( 0x0005, NtCallbackReturn, 12 ) \
+     SYSCALL_ENTRY( 0x0006, NtReadFile, 36 ) \
+@@ -276,7 +276,7 @@
+     SYSCALL_ENTRY( 0x0000, NtAccessCheck, 64 ) \
+     SYSCALL_ENTRY( 0x0001, NtWorkerFactoryWorkerReady, 8 ) \
+     SYSCALL_ENTRY( 0x0002, NtAcceptConnectPort, 48 ) \
+-    SYSCALL_ENTRY( 0x0003, NtMapUserPhysicalPagesScatter, 0 ) \
++    SYSCALL_ENTRY( 0x0003, NtMapUserPhysicalPagesScatter, 24 ) \
+     SYSCALL_ENTRY( 0x0004, NtWaitForSingleObject, 24 ) \
+     SYSCALL_ENTRY( 0x0005, NtCallbackReturn, 24 ) \
+     SYSCALL_ENTRY( 0x0006, NtReadFile, 72 ) \
+@@ -543,7 +543,6 @@
+ #define ALL_SYSCALL_STUBS \
+     SYSCALL_STUB( NtApphelpCacheControl ) \
+     SYSCALL_STUB( NtCreateProcessEx ) \
+-    SYSCALL_STUB( NtMapUserPhysicalPagesScatter ) \
+     SYSCALL_STUB( NtTraceEvent ) \
+     SYSCALL_STUB( NtWaitForMultipleObjects32 )
+ #define SYSCALL_ENTRY_NtQueryInformationProcess(id,name,args) SYSCALL_ENTRY(id,name,args)
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 1a63f7d9..4bfb0710 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -6676,6 +6676,25 @@ NTSTATUS WINAPI NtQuerySection( HANDLE handle, SECTION_INFORMATION_CLASS class,
+ }
+ 
+ 
++/***********************************************************************
++ *             NtMapUserPhysicalPagesScatter   (NTDLL.@)
++ *             ZwMapUserPhysicalPagesScatter   (NTDLL.@)
++ *
++ * AWE (Address Windowing Extensions) is not implemented in Wine: memory
++ * reserved with MEM_PHYSICAL is backed by ordinary RAM and stays mapped,
++ * so remapping physical pages into the window is a no-op here.  The point
++ * of this stub is to return gracefully instead of aborting the process,
++ * which is what the previous "@ stub" entry did on the first call.
++ */
++NTSTATUS WINAPI NtMapUserPhysicalPagesScatter( void **addresses, ULONG_PTR page_count, ULONG_PTR *pages )
++{
++    static int once;
++    if (!once++)
++        FIXME( "(%p %lu %p): no-op stub\n", addresses, page_count, pages );
++    return STATUS_SUCCESS;
++}
++
++
+ /***********************************************************************
+  *             NtFlushVirtualMemory   (NTDLL.@)
+  *             ZwFlushVirtualMemory   (NTDLL.@)
+diff --git a/dlls/wow64/virtual.c b/dlls/wow64/virtual.c
+index 605abe18..738999ed 100644
+--- a/dlls/wow64/virtual.c
++++ b/dlls/wow64/virtual.c
+@@ -282,6 +282,20 @@ NTSTATUS WINAPI wow64_NtFlushInstructionCache( UINT *args )
+ }
+ 
+ 
++/**********************************************************************
++ *           wow64_NtMapUserPhysicalPagesScatter
++ */
++NTSTATUS WINAPI wow64_NtMapUserPhysicalPagesScatter( UINT *args )
++{
++    void **addresses = get_ptr( &args );
++    ULONG_PTR page_count = get_ulong( &args );
++    ULONG_PTR *pages = get_ptr( &args );
++
++    /* AWE is a no-op under Wine (MEM_PHYSICAL is ordinary RAM); pointer layout is irrelevant. */
++    return NtMapUserPhysicalPagesScatter( addresses, page_count, pages );
++}
++
++
+ /**********************************************************************
+  *           wow64_NtFlushVirtualMemory
+  */
+diff --git a/include/winternl.h b/include/winternl.h
+index 3a80f27f..6f9496fa 100644
+--- a/include/winternl.h
++++ b/include/winternl.h
+@@ -4851,6 +4851,7 @@ NTSYSAPI NTSTATUS  WINAPI NtLockFile(HANDLE,HANDLE,PIO_APC_ROUTINE,void*,PIO_STA
+ NTSYSAPI NTSTATUS  WINAPI NtLockVirtualMemory(HANDLE,PVOID*,SIZE_T*,ULONG);
+ NTSYSAPI NTSTATUS  WINAPI NtMakePermanentObject(HANDLE);
+ NTSYSAPI NTSTATUS  WINAPI NtMakeTemporaryObject(HANDLE);
++NTSYSAPI NTSTATUS  WINAPI NtMapUserPhysicalPagesScatter(PVOID*,ULONG_PTR,ULONG_PTR*);
+ NTSYSAPI NTSTATUS  WINAPI NtMapViewOfSection(HANDLE,HANDLE,PVOID*,ULONG_PTR,SIZE_T,const LARGE_INTEGER*,SIZE_T*,SECTION_INHERIT,ULONG,ULONG);
+ NTSYSAPI NTSTATUS  WINAPI NtMapViewOfSectionEx(HANDLE,HANDLE,PVOID*,const LARGE_INTEGER*,SIZE_T*,ULONG,ULONG,MEM_EXTENDED_PARAMETER*,ULONG);
+ NTSYSAPI NTSTATUS  WINAPI NtNotifyChangeDirectoryFile(HANDLE,HANDLE,PIO_APC_ROUTINE,PVOID,PIO_STATUS_BLOCK,PVOID,ULONG,ULONG,BOOLEAN);

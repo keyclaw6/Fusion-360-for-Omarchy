@@ -1,0 +1,257 @@
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -696,6 +696,7 @@
+     UINT        shaped : 1;     /* is window using a custom region shape? */
+     UINT        layered : 1;    /* is window layered and with valid attributes? */
+     UINT        use_alpha : 1;  /* does window use an alpha channel? */
++    UINT        argb_constant_alpha : 1; /* constant alpha is applied to the GDI upload */
+     UINT        skip_taskbar : 1; /* does window should be deleted from taskbar */
+     UINT        add_taskbar : 1; /* does window should be added to taskbar regardless of style */
+     UINT        is_fullscreen : 1; /* is the window visible rect fullscreen */
+@@ -763,6 +764,7 @@
+ extern void attach_client_window( struct x11drv_win_data *data, Window client_window );
+ extern void destroy_client_window( HWND hwnd, Window client_window );
+ extern void set_window_visual( struct x11drv_win_data *data, const XVisualInfo *vis, BOOL use_alpha );
++extern BOOL use_argb_constant_alpha( const struct x11drv_win_data *data, DWORD flags );
+ extern void change_systray_owner( Display *display, Window systray_window );
+ extern BOOL update_clipboard( HWND hwnd );
+ extern void init_win_context(void);
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -2524,6 +2524,11 @@
+  */
+ void make_window_embedded( struct x11drv_win_data *data )
+ {
++    if (data->argb_constant_alpha)
++    {
++        data->argb_constant_alpha = FALSE;
++        set_window_visual( data, &default_visual, FALSE );
++    }
+     /* the window cannot be mapped before being embedded */
+     window_set_wm_state( data, WithdrawnState, FALSE );
+     if (data->managed) WARN( "Window is already managed, should wait for WithdrawnState\n" );
+@@ -2749,6 +2754,11 @@
+     set_wine_allow_flip( client_window, 1 );
+ 
+     data->client_window = client_window;
++    if (data->argb_constant_alpha)
++    {
++        data->argb_constant_alpha = FALSE;
++        set_window_visual( data, &default_visual, FALSE );
++    }
+ }
+ 
+ 
+@@ -2788,6 +2798,11 @@
+ 
+     if (!data) data = &dummy; /* use a dummy window data for HWND_MESSAGE and foreign windows, to create an offscreen client window */
+ 
++    if (data->argb_constant_alpha)
++    {
++        data->argb_constant_alpha = FALSE;
++        set_window_visual( data, &default_visual, FALSE );
++    }
+     detach_client_window( data, data->client_window );
+ 
+     attr.colormap = colormap;
+@@ -2921,7 +2936,8 @@
+ 
+     /* set the window opacity */
+     if (!NtUserGetLayeredWindowAttributes( data->hwnd, &key, &alpha, &layered_flags )) layered_flags = 0;
+-    sync_window_opacity( data->display, data->whole_window, alpha, layered_flags );
++    sync_window_opacity( data->display, data->whole_window, alpha,
++                         data->argb_constant_alpha ? 0 : layered_flags );
+     sync_window_input_shape( data );
+ 
+     XFlush( data->display );  /* make sure the window exists before we start painting to it */
+@@ -3062,6 +3078,7 @@
+         if (changed & WS_EX_LAYERED) /* changing WS_EX_LAYERED resets attributes */
+         {
+             data->layered = FALSE;
++            data->argb_constant_alpha = FALSE;
+             /* Layered overlay (WINE_LAYERED_OVERLAY_ALPHA): keep the ARGB visual instead
+              * of resetting to the opaque default, so the compositor keeps blending. */
+             if (layered_overlay_alpha_enabled() && argb_visual.visualid)
+@@ -3988,17 +4005,33 @@
+  *
+  * Set transparency attributes for a layered window.
+  */
++BOOL use_argb_constant_alpha( const struct x11drv_win_data *data, DWORD flags )
++{
++    const char *opt = getenv( "WINE_X11_ARGB_CONSTANT_ALPHA" );
++
++    /* Only GDI constant-alpha surfaces can be converted here. Native client
++     * producers, color keys and UpdateLayeredWindow keep their existing paths. */
++    return opt && !strcmp( opt, "1" ) && flags == LWA_ALPHA && client_side_graphics &&
++           !data->embedded && !data->client_window && data->whole_window != root_window &&
++           argb_visual.visualid && argb_visual.depth == 32 &&
++           argb_visual.red_mask == 0xff0000 && argb_visual.green_mask == 0x00ff00 &&
++           argb_visual.blue_mask == 0x0000ff;
++}
++
+ void X11DRV_SetLayeredWindowAttributes( HWND hwnd, COLORREF key, BYTE alpha, DWORD flags )
+ {
+     struct x11drv_win_data *data = get_win_data( hwnd );
+ 
+     if (data)
+     {
+-        set_window_visual( data, &default_visual, FALSE );
++        data->argb_constant_alpha = use_argb_constant_alpha( data, flags );
++        if (data->argb_constant_alpha) set_window_visual( data, &argb_visual, TRUE );
++        else set_window_visual( data, &default_visual, FALSE );
+ 
+         if (data->whole_window)
+         {
+-            sync_window_opacity( data->display, data->whole_window, alpha, flags );
++            sync_window_opacity( data->display, data->whole_window, alpha,
++                                 data->argb_constant_alpha ? 0 : flags );
+             XFlush( data->display );
+         }
+ 
+--- a/dlls/winex11.drv/bitblt.c
++++ b/dlls/winex11.drv/bitblt.c
+@@ -47,6 +47,7 @@
+ #endif
+ 
+ #include "x11drv.h"
++#include "constant_alpha.h"
+ #include "winternl.h"
+ #include "wine/debug.h"
+ 
+@@ -1589,6 +1590,7 @@
+     GC                    gc;
+     struct x11drv_image  *image;
+     BOOL                  byteswap;
++    BOOL                  constant_alpha;
+     int                   x_offset;
+     int                   y_offset;
+     RECT                 *clip_rects;
+@@ -1823,7 +1825,28 @@
+         }
+     }
+ 
+-    if (src != dst)
++    if (surface->constant_alpha && !alpha_mask)
++    {
++        int x, y, src_stride = get_dib_stride( color_info->bmiHeader.biWidth, 32 );
++        BYTE alpha = window_surface->alpha_bits == ~0u ? 255 : window_surface->alpha_bits >> 24;
++
++        /* The GDI bitmap must remain unmodified: multiplying an aliased XImage
++         * on each flush would darken unchanged pixels repeatedly. */
++        assert( src != dst );
++        assert( color_info->bmiHeader.biBitCount == 32 );
++        for (y = dirty->top; y < dirty->bottom; y++)
++        {
++            const UINT *source = (const UINT *)(src + y * src_stride);
++            UINT *target = (UINT *)(dst + y * ximage->bytes_per_line);
++
++            for (x = dirty->left; x < dirty->right; x++)
++            {
++                UINT pixel = x11drv_premultiply_constant_alpha( source[x], alpha );
++                target[x] = surface->byteswap ? RtlUlongByteSwap( pixel ) : pixel;
++            }
++        }
++    }
++    else if (src != dst)
+     {
+         int map[256], *mapping = get_window_surface_mapping( ximage->bits_per_pixel, map );
+         int width_bytes = ximage->bytes_per_line;
+@@ -1919,7 +1942,7 @@
+  *           create_surface
+  */
+ static struct window_surface *create_surface( HWND hwnd, Window window, const XVisualInfo *vis, const RECT *rect,
+-                                              BOOL use_alpha )
++                                              BOOL use_alpha, BOOL constant_alpha )
+ {
+     const XPixmapFormatValues *format = pixmap_formats[vis->depth];
+     char buffer[FIELD_OFFSET( BITMAPINFO, bmiColors[256] )];
+@@ -1945,7 +1968,10 @@
+     if (!(image = x11drv_image_create( info, vis ))) return NULL;
+ 
+     /* wrap the XImage data in a HBITMAP if we can write to the surface pixels directly */
+-    if ((byteswap = image_needs_byteswap( image->ximage, is_r8g8b8( vis ), info->bmiHeader.biBitCount )) ||
++    byteswap = image_needs_byteswap( image->ximage, is_r8g8b8( vis ), info->bmiHeader.biBitCount );
++    if (constant_alpha)
++        TRACE( "Using a separate constant-alpha upload buffer\n" );
++    else if (byteswap ||
+         info->bmiHeader.biBitCount <= 8 || !(d3d_format = get_dib_d3dddifmt( info )))
+         WARN( "Cannot use direct rendering, falling back to copies\n" );
+     else
+@@ -1980,6 +2006,7 @@
+         surface = get_x11_surface( window_surface );
+         surface->image = image;
+         surface->byteswap = byteswap;
++        surface->constant_alpha = constant_alpha;
+         surface->window = window;
+         surface->gc = XCreateGC( gdi_display, window, 0, NULL );
+         XSetSubwindowMode( gdi_display, surface->gc, IncludeInferiors );
+@@ -2012,14 +2039,29 @@
+ {
+     struct window_surface *previous;
+     struct x11drv_win_data *data;
++    DWORD flags = 0;
++    BOOL constant_alpha;
+ 
+     TRACE( "hwnd %p, layered %u, surface_rect %s, surface %p\n", hwnd, layered, wine_dbgstr_rect( surface_rect ), surface );
+ 
+     if (!(data = get_win_data( hwnd ))) return TRUE; /* use default surface */
++    if (!layered) NtUserGetLayeredWindowAttributes( hwnd, NULL, NULL, &flags );
++    constant_alpha = !layered && use_argb_constant_alpha( data, flags );
++    if (constant_alpha)
++    {
++        data->argb_constant_alpha = TRUE;
++        set_window_visual( data, &argb_visual, TRUE );
++    }
++    else if (data->argb_constant_alpha)
++    {
++        data->argb_constant_alpha = FALSE;
++        if (!layered) set_window_visual( data, &default_visual, FALSE );
++    }
+     if ((previous = *surface) && previous->funcs == &x11drv_surface_funcs)
+     {
+         Window window = get_x11_surface(previous)->window;
+-        if (data->whole_window == window && !enable_direct_drawing( data, layered )) goto done; /* use default surface */
++        if (data->whole_window == window && get_x11_surface(previous)->constant_alpha == constant_alpha &&
++            !enable_direct_drawing( data, layered || constant_alpha )) goto done; /* use default surface */
+         /* re-create window surface is window has changed, which can happen when changing visual */
+         TRACE( "re-creating hwnd %p surface with new window %lx\n", data->hwnd, data->whole_window );
+     }
+@@ -2030,14 +2072,14 @@
+         data->layered = TRUE;
+         if (!data->embedded && argb_visual.visualid) set_window_visual( data, &argb_visual, TRUE );
+     }
+-    else if (enable_direct_drawing( data, layered ))
++    else if (enable_direct_drawing( data, layered || constant_alpha ))
+     {
+         *surface = NULL;  /* indicate that we want to draw directly to the window */
+         goto done; /* draw directly to the window */
+     }
+ 
+     *surface = create_surface( data->hwnd, data->whole_window, &data->vis, surface_rect,
+-                               layered ? data->use_alpha : FALSE );
++                               layered ? data->use_alpha : FALSE, constant_alpha );
+     set_surface_window_rects( *surface, &data->rects );
+ 
+ done:
+--- /dev/null
++++ b/dlls/winex11.drv/constant_alpha.h
+@@ -0,0 +1,19 @@
++/*
++ * Constant-alpha GDI upload conversion.
++ * SPDX-License-Identifier: LGPL-2.1-or-later
++ */
++#ifndef __WINE_X11DRV_CONSTANT_ALPHA_H
++#define __WINE_X11DRV_CONSTANT_ALPHA_H
++
++/* SetLayeredWindowAttributes ignores the source bitmap's reserved alpha byte.
++ * XWayland ARGB buffers require premultiplied color channels. */
++static inline unsigned int x11drv_premultiply_constant_alpha( unsigned int pixel, unsigned int alpha )
++{
++    unsigned int red = (((pixel >> 16) & 255) * alpha + 127) / 255;
++    unsigned int green = (((pixel >> 8) & 255) * alpha + 127) / 255;
++    unsigned int blue = ((pixel & 255) * alpha + 127) / 255;
++
++    return (alpha << 24) | (red << 16) | (green << 8) | blue;
++}
++
++#endif

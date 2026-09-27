@@ -1,0 +1,4 @@
+# Diff context and upstream license bytes are intentional, hash-pinned inputs.
+runtime-patches/*.patch -whitespace
+runtime-patches/**/*.patch -whitespace
+runtime-patches/LICENSE.* -whitespace

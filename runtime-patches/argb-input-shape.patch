@@ -1,0 +1,46 @@
+--- a/dlls/winex11.drv/bitblt.c
++++ b/dlls/winex11.drv/bitblt.c
+@@ -1845,13 +1845,32 @@
+ 
+     if (shape_changed)
+     {
++        const char *input_shape_opt = getenv( "WINE_X11_ARGB_SHAPE_INPUT" );
++        BOOL input_shape_enabled = input_shape_opt && !strcmp( input_shape_opt, "1" );
++        BOOL argb_input_shape = input_shape_enabled && alpha_mask && ximage->depth == 32;
++#ifdef HAVE_LIBXSHAPE
++        int shape_kind = ShapeBounding;
++#endif
++
+         /* HACK: Do not shape layered windows on gamescope */
+-        if (shape_bits && alpha_mask != 0 && X11DRV_HasWindowManager( "steamcompmgr" ))
++        if (!argb_input_shape && shape_bits && alpha_mask != 0 && X11DRV_HasWindowManager( "steamcompmgr" ))
+             shape_bits = 0;
+ 
+ #ifdef HAVE_LIBXSHAPE
++        /* Keep alpha-zero pixels writable in the redirected ARGB pixmap. A
++         * bounding shape clips their upload and can leave stale opaque pixels
++         * for the XWayland compositor. Retain the mask for hit testing instead.
++         * This experimental path is opt-in and only affects ARGB layered surfaces. */
++        if (argb_input_shape)
++        {
++            XShapeCombineMask( gdi_display, surface->window, ShapeBounding, 0, 0, None, ShapeSet );
++            shape_kind = ShapeInput;
++        }
++        else if (input_shape_enabled)
++            XShapeCombineMask( gdi_display, surface->window, ShapeInput, 0, 0, None, ShapeSet );
++
+         if (!shape_bits)
+-            XShapeCombineMask( gdi_display, surface->window, ShapeBounding, 0, 0, None, ShapeSet );
++            XShapeCombineMask( gdi_display, surface->window, shape_kind, 0, 0, None, ShapeSet );
+         else
+         {
+             struct gdi_image_bits bits = {.ptr = (void *)shape_bits};
+@@ -1860,7 +1879,7 @@
+ 
+             vis.depth = 1;
+             shape = create_pixmap_from_image( 0, &vis, shape_info, &bits, DIB_RGB_COLORS );
+-            XShapeCombineMask( gdi_display, surface->window, ShapeBounding, surface->x_offset, surface->y_offset, shape, ShapeSet );
++            XShapeCombineMask( gdi_display, surface->window, shape_kind, surface->x_offset, surface->y_offset, shape, ShapeSet );
+             XFreePixmap( gdi_display, shape );
+         }
+ #endif /* HAVE_LIBXSHAPE */

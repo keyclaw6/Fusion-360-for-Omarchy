@@ -1,0 +1,142 @@
+{
+  "schema": 1,
+  "id": "wine-11.17-omarchy-alpha-v1",
+  "acceptance": "experimental; Browser transparency and corrected Normal selection controls passed; full operational gate incomplete",
+  "source": {
+    "repository": "https://github.com/wine-mirror/wine",
+    "commit": "36b6a2cf679fb395f668a917b76537190e212d9c",
+    "tag": "wine-11.17",
+    "archive_url": "https://api.github.com/repos/wine-mirror/wine/tarball/36b6a2cf679fb395f668a917b76537190e212d9c",
+    "archive_sha256": "e638bf7344d6fe073ababe678ebdf6a258457aa30f660bdac53d3018f38bf0af"
+  },
+  "upstream_source_commit": "7da442d6af5ac2619e5151475d2be54efe6170bc",
+  "runner_archive": {
+    "url": "https://github.com/Lolig4/Autodesk-Fusion-360-for-Linux/releases/download/Version_1/fusion-wine-build.tar.gz",
+    "sha256": "9ef47e25de30d52fb110b9f257d128755904ecfabda4a0c2ce43416e075a4479"
+  },
+  "sdk": {
+    "registry": "https://registry.gitlab.steamos.cloud",
+    "repository": "proton/steamrt4/sdk/x86_64",
+    "tag": "4.0.20260714.251823-0",
+    "manifest_sha256": "6c1789cad862fd8ed9d46d71bbf8752bb7cb2336ab5e9680c0f0e3e7c88d77f1",
+    "compiler": "gcc (Debian 14.2.0-19) 14.2.0"
+  },
+  "link_inputs": {
+    "ntdll.so": "12f7f863badddb2be71e7817428f97d3d75a30c0f6902876e9af80af42e8f270",
+    "win32u.so": "79923250de21f0f7d5e6e98e95fc8ecbaf5381e79920f9873e08b0f2f57c8b9d"
+  },
+  "module": {
+    "target": "lib/wine/x86_64-unix/winex11.so",
+    "original_sha256": "05d4cc19270f43e2cf88b8fd76da07523eef63d2f428c5fe535bab371c5c1d7a",
+    "sha256": "6fdec486a07b4a3d178dcbb70b033d39f46f740da18ea9e8aa19db6cefe769ce"
+  },
+  "required_environment": {
+    "WINE_X11_ARGB_SHAPE_INPUT": "1",
+    "WINE_X11_ARGB_CONSTANT_ALPHA": "1"
+  },
+  "patches": [
+    {
+      "file": "upstream/inventor-patches/regloadappkey-binary-hive.patch",
+      "sha256": "9211e6070062e0a99033a2014eecc976354768a7b522e1d3c270c5d11d73fc42",
+      "origin": "https://codeberg.org/Lolig4/Autodesk-Fusion-360-on-Linux/src/commit/7da442d6af5ac2619e5151475d2be54efe6170bc/files/setup/data/inventor-patches/regloadappkey-binary-hive.patch"
+    },
+    {
+      "file": "upstream/inventor-patches/msi-generate-transform.patch",
+      "sha256": "c96b655d7de8eb84f6918350af661d748a01f678df5b4a653af05fe824fecd38",
+      "origin": "https://codeberg.org/Lolig4/Autodesk-Fusion-360-on-Linux/src/commit/7da442d6af5ac2619e5151475d2be54efe6170bc/files/setup/data/inventor-patches/msi-generate-transform.patch"
+    },
+    {
+      "file": "upstream/inventor-patches/wintrust-wtd-choice-blob.patch",
+      "sha256": "b7aa1cae461e423f4dc083192a03ed9e21a6c80054b1268e5b26a8d97092f72d",
+      "origin": "https://codeberg.org/Lolig4/Autodesk-Fusion-360-on-Linux/src/commit/7da442d6af5ac2619e5151475d2be54efe6170bc/files/setup/data/inventor-patches/wintrust-wtd-choice-blob.patch"
+    },
+    {
+      "file": "upstream/inventor-patches/ole32-revokedragdrop-release-order.patch",
+      "sha256": "1f555da43897c0af6dd035f48be97f169ff5a7eb8825969cf33b3346a4f8556d",
+      "origin": "https://codeberg.org/Lolig4/Autodesk-Fusion-360-on-Linux/src/commit/7da442d6af5ac2619e5151475d2be54efe6170bc/files/setup/data/inventor-patches/ole32-revokedragdrop-release-order.patch"
+    },
+    {
+      "file": "upstream/inventor-patches/services-session0-scm1053.patch",
+      "sha256": "206844d8d45369e0b10f1ec43a528628facb30c602b09868103ef378d138ddbc",
+      "origin": "https://codeberg.org/Lolig4/Autodesk-Fusion-360-on-Linux/src/commit/7da442d6af5ac2619e5151475d2be54efe6170bc/files/setup/data/inventor-patches/services-session0-scm1053.patch"
+    },
+    {
+      "file": "upstream/fusion-patches/winex11-owned-tool-windows.patch",
+      "sha256": "906aa4406dd6cba74b5ad29f0bfa13fad217e387d76843b7d44eaee2931c4e5a",
+      "origin": "https://codeberg.org/Lolig4/Autodesk-Fusion-360-on-Linux/src/commit/7da442d6af5ac2619e5151475d2be54efe6170bc/files/setup/data/fusion-patches/winex11-owned-tool-windows.patch"
+    },
+    {
+      "file": "upstream/fusion-patches/dwrite-glyph-cache-rendering-mode.patch",
+      "sha256": "61b99645b04e3af56ef6b989af784e3d53b5362cad641d82204a6381b801adba",
+      "origin": "https://codeberg.org/Lolig4/Autodesk-Fusion-360-on-Linux/src/commit/7da442d6af5ac2619e5151475d2be54efe6170bc/files/setup/data/fusion-patches/dwrite-glyph-cache-rendering-mode.patch"
+    },
+    {
+      "file": "upstream/inventor-patches/ntdll-mapuserphysicalpagesscatter.patch",
+      "sha256": "4dee475521bdcbeab5a755cb9c9233464e61f4ac4fb1e7a7fc162f37845a12e6",
+      "origin": "https://codeberg.org/Lolig4/Autodesk-Fusion-360-on-Linux/src/commit/7da442d6af5ac2619e5151475d2be54efe6170bc/files/setup/data/inventor-patches/ntdll-mapuserphysicalpagesscatter.patch"
+    },
+    {
+      "file": "upstream/fusion-patches/win32u-vulkan-wait-for-present.patch",
+      "sha256": "1d4aadbf6d9e1444e6548b1b3f1ea07ca5cd8859ba12f545301c5046f0c664ba",
+      "origin": "https://codeberg.org/Lolig4/Autodesk-Fusion-360-on-Linux/src/commit/7da442d6af5ac2619e5151475d2be54efe6170bc/files/setup/data/fusion-patches/win32u-vulkan-wait-for-present.patch"
+    },
+    {
+      "file": "upstream/fusion-patches/symcrypt-rsa-exponent1.patch",
+      "sha256": "dd1c26f843204c40dc56842966bb9c8185da5963b59eec857e84a37ce2835284",
+      "origin": "https://codeberg.org/Lolig4/Autodesk-Fusion-360-on-Linux/src/commit/7da442d6af5ac2619e5151475d2be54efe6170bc/files/setup/data/fusion-patches/symcrypt-rsa-exponent1.patch"
+    },
+    {
+      "file": "argb-input-shape.patch",
+      "sha256": "afe69b3f83370bef9f35d121763e10e4fcc6d3d553fab2709d988ef4116e1c1d",
+      "origin": "Local source port of the Test 1 alpha fixes to official Wine 11.17"
+    },
+    {
+      "file": "argb-constant-alpha.patch",
+      "sha256": "e49da60f10e10946dc75fb637e8d296bfcbc7cd97f5d140318109b2362797f04",
+      "origin": "Local source port of the Test 1 alpha fixes to official Wine 11.17"
+    }
+  ],
+  "abi": {
+    "user_driver_version": 110,
+    "user_driver_funcs_size": 1216,
+    "gdi_dc_funcs_size": 712,
+    "window_surface_size": 160,
+    "exported_symbols": [
+      "__wine_unix_lib_init"
+    ],
+    "new_undefined_imports": [],
+    "removed_undefined_imports": [],
+    "dt_needed": [
+      "libX11.so.6",
+      "libXext.so.6",
+      "libc.so.6",
+      "libm.so.6",
+      "ntdll.so",
+      "win32u.so"
+    ]
+  },
+  "validation": {
+    "compile_werror": true,
+    "host_relocations": "passed against the exact standalone archive ntdll/win32u and actual host libraries",
+    "constant_alpha_sanitizers": "passed",
+    "input_shape_sanitizers": "passed",
+    "recipe_rebuild": "2026-09-26: committed build-module.py prepared fresh official source, applied all twelve patches with zero fuzz, reproduced exact 6fdec486a07b4a3d178dcbb70b033d39f46f740da18ea9e8aa19db6cefe769ce; ABI, relocations, and both ASan/UBSan tests passed",
+    "complete_runtime_rebuilt": false,
+    "live_review": "2026-09-27: corrected Normal selection passed native edits and cold restart; earlier blanket rejection was premature; full independent operational gate incomplete; docs/reviewer-audit.md",
+    "historical_live_review": "2026-09-26: independent reviewer rejected the then-tested selection result; superseded by the corrected controls, not by full application acceptance; docs/review.md"
+  },
+  "source_files": {
+    "dlls/winex11.drv/bitblt.c": "562a9b4b158ff0145baac8855d009127c202b043a2eb0182aebc1e3d8afb82be",
+    "dlls/winex11.drv/window.c": "c8c674213f6674a098c86a4ea7ebffdec97da6c39d7e25fcffedfec83081170f",
+    "dlls/winex11.drv/x11drv.h": "c551ba2ca5602ed32a0c6830e0852cb1e0ca9f5cc089b6586beb423b20409ee1",
+    "dlls/winex11.drv/constant_alpha.h": "898b3d462429b524f42bb96a93814ae4f373b44bd4ae88014975b1692b00a5a5"
+  },
+  "recipe_files": {
+    "build-module.py": "604d2fd3437f8399f7f82bbf18f9b2a30d3a084e794ae0970d8ca4a443a3c267",
+    "compile.sh": "ac48c1567bf3bd6a76a693abb37bbac991bdecbce7cf0d470353842d18c464bc",
+    "test-constant-alpha.py": "8f6046df6a836d94a51c12b45691cfeec2a45efa6770b40d9b21769bf5458835",
+    "test-input-shape.py": "c3a8a187fde9755cf0fca782ecbf54dfc7a57c368873a75d78d67b1cb69449c6",
+    "LICENSE.Wine-LGPL-2.1": "e237fa56668030e928551ddd60f05df5fe957f75eab874bbd017e085ed722e7c",
+    "LICENSE.Lolig4-MIT": "34952610c611b29a07b9b309aba899d57d9389c9977c677120f59c74abf26a32"
+  }
+}

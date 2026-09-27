@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "application": "Autodesk Fusion",
+  "upstream_reference": {
+    "repository": "https://github.com/Kotya31415/Fusion180",
+    "commit": "04ff7ad901e3e6aab34fd342cabcca2b31ea523a"
+  },
+  "runner": {
+    "name": "GE-Proton11-7-x86_64",
+    "url": "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/GE-Proton11-7/GE-Proton11-7-x86_64.tar.gz",
+    "sha256": "c5448b76a230384e2d7bc6beb5ccb97bafb7e2c3b6c527cb03a1a546bbcb00a0",
+    "sha512": "7db87e9787e20c35cbdac26018431d5794626b626e4067b050684e45a88cc2ca229d7d263519eafb2e168cde5bef57611065d159d3685aaec152ccb9abe3073f"
+  },
+  "launcher": {
+    "name": "umu-launcher",
+    "version": "1.4.4",
+    "reason": "Steam client has no account session and opens only its required sign-in screen. Use the brief-authorized supported outside-Steam integration."
+  },
+  "renderer": "DirectX 11 (DXVK); Qt Quick OpenGL composition",
+  "autodesk_installer": {
+    "url": "https://dl.appstreaming.autodesk.com/production/installers/Fusion%20Client%20Downloader.exe",
+    "sha256": "be14db489eb8d33638573e252805152136717c2a23aaee479ba20202a4bf5ece"
+  },
+  "steam_runtime": {
+    "name": "steamrt4",
+    "version": "4.0.20260914.260627",
+    "appid": "4183110",
+    "url": "https://repo.steampowered.com/steamrt4/images/4.0.20260914.260627/SteamLinuxRuntime_4.tar.xz",
+    "sha256": "985e2728bbb65fff7ae5ea9e3389762beceaf8319878f542a0222bba241b5217",
+    "checksum_source": "https://repo.steampowered.com/steamrt4/images/4.0.20260914.260627/SHA256SUMS",
+    "archive_sha256_verified_by_umu": true,
+    "mtree_verified_by_umu": true
+  },
+  "fusion": {
+    "version": "2705.1.25",
+    "deployment": "c657666a51cec7a9bbd042e10872bcd9532508a8"
+  },
+  "runner_overlay": {
+    "id": "ge-proton11-7-omarchy-x11-v3",
+    "modules": [
+      {
+        "target": "files/lib/wine/x86_64-unix/winex11.so",
+        "original_sha256": "5acbf619a5d13b4d38cde3adba9724e5de5427a117caf0e2336864e20281f080",
+        "sha256": "6b5f680717f8e1db59039eeb50a953ac7703d6a7e88cd1e891c345e372020f1f"
+      },
+      {
+        "target": "files/lib/wine/x86_64-unix/win32u.so",
+        "original_sha256": "7fd98d9364404e7fedb800df54d01053af0ac015d63b8c8967d145e302a57d8b",
+        "sha256": "201ef0e0f4d48dfc093a16ffdd221c0ef37427e35ec59238756e0dc54c134d38"
+      }
+    ],
+    "required_environment": {
+      "WINE_X11_ARGB_SHAPE_INPUT": "1",
+      "WINE_X11_ARGB_CONSTANT_ALPHA": "1",
+      "QSG_RHI_BACKEND": "opengl",
+      "WINE_X11_VULKAN_PRESENT_WAIT": "1"
+    },
+    "manifest": "runtime-patches/manifest.json"
+  }
+}
