@@ -1,5 +1,5 @@
 -- Run the owned block against typed-window stand-ins, never the live compositor.
-local callbacks, operations, queries = {}, {}, 0
+local callbacks, subscriptions, operations, queries, timers = {}, {}, {}, 0, {}
 local workspace, other_workspace = {}, {}
 local main = {mapped = true, xwayland = true, class = "steam_app_fusion360", pid = 42,
               initial_title = "  Autodesk Fusion  ", workspace = workspace, allowed_over_fullscreen = false}
@@ -16,10 +16,19 @@ local environment = {
   type = type, math = math, ipairs = ipairs, pcall = pcall, error = error,
   o = {window = function() end},
   hl = {
+    timer = function(callback,args)
+      assert(args.timeout==600 and args.type=="oneshot")
+      local timer={callback=callback,enabled=true}
+      function timer:set_enabled(value) self.enabled=value end
+      timers[#timers+1]=timer;return timer
+    end,
     on = function(name, callback)
-      assert(name == "window.move_to_workspace" or name == "window.active" or name == "window.fullscreen")
-      assert(not callbacks[name])
-      callbacks[name] = callback
+      assert(name == "window.move_to_workspace" or name == "window.open" or name == "window.active" or name == "window.fullscreen")
+      subscriptions[name] = subscriptions[name] or {}
+      table.insert(subscriptions[name], callback)
+      callbacks[name] = function(...)
+        for _, handler in ipairs(subscriptions[name]) do handler(...) end
+      end
     end,
     get_windows = function(filter)
       assert(filter.class == "steam_app_fusion360" and filter.mapped == true and filter.floating == nil)
@@ -55,4 +64,5 @@ assert(callbacks["window.move_to_workspace"] and callbacks["window.active"] and 
 assert(queries == 0 and #operations == 0)
 for key in pairs(environment) do assert(original_keys[key], "hook leaked a global: " .. key) end
 local on_active, on_fullscreen = callbacks["window.active"], callbacks["window.fullscreen"]
+local on_open, on_move = callbacks["window.open"], subscriptions["window.move_to_workspace"][2]
 -- Per-test assertions follow in the same lexical scope.

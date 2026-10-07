@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 import fcntl
 import hashlib
 import json
@@ -725,8 +725,96 @@ def _acquire_lock(path: Path, operation: int) -> int:
     return descriptor
 
 
+def launch_workspace() -> str | None:
+    """Capture the invoking Hyprland workspace once, before slow startup work."""
+    if not os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") or not shutil.which("hyprctl"):
+        return None
+    try:
+        result = subprocess.run(["hyprctl", "-j", "activeworkspace"], capture_output=True,
+                                text=True, timeout=3, check=True)
+        workspace = json.loads(result.stdout)
+        name = workspace.get("name", "")
+        if isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9_.:-]+", name):
+            return name
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    return None
+
+
+def anchor_startup(paths: Paths, workspace: str | None) -> tuple[str, str] | None:
+    """Temporary, silent placement for new Fusion windows only.
+
+    Omarchy disables general launch workspace tracking. This named rule expires
+    when a unique main window and its MessageTray map, or after two minutes if launch fails. Later
+    children use the persistent same-process group hook. Existing Fusion windows
+    anywhere cause this helper to leave compositor placement alone.
+    """
+    if workspace is None:
+        return None
+    name = "fusion360-startup-" + hashlib.sha256(str(paths.prefix).encode()).hexdigest()[:16]
+    token = uuid.uuid4().hex
+    expression = '''do
+      _G.fusion360_startups = _G.fusion360_startups or {}
+      local slots = _G.fusion360_startups
+      if slots[NAME] then slots[NAME].finish() end
+      local existing = hl.get_windows({class="steam_app_fusion360",mapped=true})
+      if #existing > 0 then return end
+      local rule = hl.window_rule({name=NAME,match={class="^steam_app_fusion360$",xwayland=true},workspace=WORKSPACE})
+      local subscriptions, timer = {}, nil
+      local slot = {token=TOKEN}
+      local done = false
+      local function finish()
+        if done then return end
+        done=true
+        for _, subscription in ipairs(subscriptions) do subscription:remove() end
+        if timer then timer:set_enabled(false) end
+        -- A delayed callback must never disable a newer launch's named rule.
+        if slots[NAME] == slot then rule:set_enabled(false);slots[NAME]=nil end
+      end
+      slot.finish=finish;slots[NAME]=slot
+      local function ready(event, closing)
+        if done or not event or not event.xwayland or event.class~="steam_app_fusion360" then return end
+        local mains, tray = 0, false
+        for _, window in ipairs(hl.get_windows({class="steam_app_fusion360",mapped=true})) do
+          if window.mapped and window.xwayland and window.class=="steam_app_fusion360"
+              and window.pid==event.pid and (not closing or window.address~=event.address) then
+            local title=window.initial_title
+            if type(title)=="string" then
+              if title:match("^%s*(.-)%s*$")=="Autodesk Fusion" then mains=mains+1 end
+              if title:match("^Msg:QTView:.*MessageTray$") then tray=true end
+            end
+          end
+        end
+        -- The splash and real main share a title and can coexist. A unique
+        -- main plus its UI tray proves readiness without a whitespace guess.
+        if mains==1 and tray then finish() end
+      end
+      subscriptions[1]=hl.on("window.open",function(w) ready(w, false) end)
+      subscriptions[2]=hl.on("window.close",function(w) ready(w, true) end)
+      timer=hl.timer(finish,{timeout=120000,type="oneshot"})
+    end'''.replace("NAME", json.dumps(name)).replace("TOKEN", json.dumps(token)).replace("WORKSPACE", json.dumps(workspace + " silent"))
+    result = subprocess.run(["hyprctl", "eval", expression], capture_output=True, text=True, timeout=5)
+    if result.returncode or result.stdout.strip() != "ok":
+        raise LauncherError("Fusion could not reserve its launch workspace; Hyprland rejected its startup rule.")
+    return name, token
+
+
+def release_startup_anchor(anchor: tuple[str, str] | None) -> None:
+    if anchor is None:
+        return
+    name, token = anchor
+    expression = ("do local slots=_G.fusion360_startups;local slot=slots and slots[" + json.dumps(name)
+                  + "];if slot and slot.token==" + json.dumps(token) + " then slot.finish() end end")
+    try:
+        subprocess.run(["hyprctl", "eval", expression],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+    except (OSError, subprocess.SubprocessError):
+        pass # Compositor timer/reload also removes the temporary placement.
+
+
 def launch(paths: Paths, argument: str | None = None, prestart_identity: bool = True) -> int:
     """Coordinate with prefix maintenance and serialize all cold startups."""
+    origin = launch_workspace()
     validate_runtime(paths)
     try:
         maintenance_lock = _acquire_lock(paths.state / ".maintenance.lock", fcntl.LOCK_SH)
@@ -752,9 +840,13 @@ def launch(paths: Paths, argument: str | None = None, prestart_identity: bool = 
                     raise LauncherError("Fusion is already starting. Wait for it to finish starting.") from None
                 time.sleep(0.2)
             else:
+                anchor = None
                 try:
+                    if origin is not None and not active_processes(paths)["fusion"]:
+                        anchor = anchor_startup(paths, origin)
                     return _launch(paths, argument, prestart_identity, on_session_ready=release_maintenance)
                 finally:
+                    release_startup_anchor(anchor)
                     os.close(startup_lock)
     finally:
         release_maintenance()
@@ -868,6 +960,60 @@ def configure_browser(paths: Paths, helper_path: str) -> int:
     return subprocess.call([shutil.which("umu-run") or "/usr/bin/umu-run", str(target), *arguments],
                            env=clean_environment(paths), cwd=paths.prefix,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def configure_host_folders(paths: Paths, _: str = "") -> int:
+    """Expose host Documents/Downloads and start local browsing in the host home.
+
+    Run explicitly in this installation's verified live session. Export only
+    the three affected preference keys before changing them; never replace
+    Wine profile directories or move the user's files.
+    """
+    validate_runtime(paths)
+    require_session(paths)
+    home = Path.home().resolve()
+    z_drive = paths.prefix / "dosdevices/z:"
+    if not z_drive.is_dir() or z_drive.resolve() != Path("/"):
+        raise LauncherError("Host folder setup requires the installation's Z: filesystem mapping.")
+    def folder(kind: str) -> Path:
+        candidate = home / {"DOCUMENTS": "Documents", "DOWNLOAD": "Downloads"}[kind]
+        if shutil.which("xdg-user-dir"):
+            result = subprocess.run(["xdg-user-dir", kind], capture_output=True, text=True, timeout=5)
+            selected = Path(result.stdout.strip())
+            if not result.returncode and selected.is_absolute() and selected.is_dir():
+                candidate = selected.resolve()
+        return candidate if candidate.is_dir() else home
+    def windows(directory: Path) -> str:
+        if any(re.search(r'[<>:"|?*\\]', part) for part in directory.parts[1:]):
+            raise LauncherError("A host folder cannot be addressed with a Windows path.")
+        return str(PureWindowsPath("Z:\\", *directory.parts[1:]))
+    personal, downloads = windows(folder("DOCUMENTS")), windows(folder("DOWNLOAD"))
+    target = paths.prefix / "drive_c/windows/system32/reg.exe"
+    if not target.is_file():
+        raise LauncherError("Wine's registry utility was not found in this prefix.")
+    base = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer"
+    keys = [base + r"\Shell Folders", base + r"\User Shell Folders",
+            r"HKCU\Software\QtProject\OrganizationDefaults\FileDialog"]
+    recovery = paths.state / "host-folders"
+    if recovery.is_symlink():
+        raise LauncherError("Host-folder recovery directory must not be a symlink.")
+    recovery.mkdir(mode=0o700, exist_ok=True)
+    recovery.chmod(0o700)
+    saved = recovery / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + str(time.monotonic_ns()))
+    saved.mkdir(mode=0o700)
+    for index, key in enumerate(keys):
+        exported = saved / (str(index) + ".reg")
+        code = attach(paths, target, ["export", key, windows(exported), "/y"])
+        if code:
+            raise LauncherError("Host-folder preference backup failed; no preferences were changed.")
+        exported.chmod(0o600)
+    values = [(key, name, value) for key in keys[:2]
+              for name, value in [("Personal", personal), ("{374DE290-123F-4565-9164-39C4925E467B}", downloads)]]
+    values.append((keys[2], "lastVisited", "file:///Z:" + home.as_posix()))
+    for key, name, value in values:
+        if attach(paths, target, ["add", key, "/v", name, "/t", "REG_SZ", "/d", value, "/f"]):
+            raise LauncherError("Host-folder setup stopped; prior preferences are preserved under host-folders.")
+    return 0
 
 
 def browser_command(uri: str, host_root: Path = Path("/run/host")) -> list[str]:
@@ -1213,6 +1359,7 @@ def main(argv: list[str] | None = None) -> int:
     installer.add_argument("file")
     configure = sub.add_parser("configure-browser", help="Set this prefix's WineBrowser helper")
     configure.add_argument("helper")
+    sub.add_parser("configure-folders", help="Use host Documents/Downloads and home in local file dialogs")
     sub.add_parser("stop-idle-runtime", help="Stop this verified runtime only after application and update work exits")
     args = parser.parse_args(argv)
     paths = Paths.default()
@@ -1239,6 +1386,8 @@ def main(argv: list[str] | None = None) -> int:
             code = _run_maintenance_cli(paths, install_exe, args.file)
         elif args.command == "configure-browser":
             code = _run_maintenance_cli(paths, configure_browser, args.helper)
+        elif args.command == "configure-folders":
+            code = _run_maintenance_cli(paths, configure_host_folders, "")
         elif args.command == "stop-idle-runtime":
             code = _run_maintenance_cli(paths, lambda item, _: stop_idle_runtime(item), "")
         else:

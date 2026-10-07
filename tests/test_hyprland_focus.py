@@ -102,6 +102,33 @@ class FocusRuleTests(unittest.TestCase):
         self.assertEqual(self.config.stat().st_mode & 0o777, 0o640)
         self.assertTrue(backup.exists())
 
+    def test_deployed_group_revision_upgrades_and_rolls_back_exactly(self):
+        self.assertEqual(focus._hash(focus.GROUP_BLOCK),
+                         "9239f81b3ad92a9ca2460f5f85d71ff4fd934fd6ec1ff4fda37c428b10341ae2")
+        with mock.patch.object(focus, "BLOCK", focus.GROUP_BLOCK):
+            self.install()
+        previous = self.config.read_bytes()
+        record_path = self.state / "hyprland-focus/record.json"
+        previous_record = record_path.read_bytes()
+        self.install()
+        self.assertIn(focus.BLOCK, self.config.read_bytes())
+        self.assertTrue(focus.rollback_focus_rule(self.config, self.state))
+        self.assertEqual(self.config.read_bytes(), previous)
+        self.assertEqual(record_path.read_bytes(), previous_record)
+        self.remove()
+        self.assertEqual(self.config.read_bytes(), self.original)
+
+    def test_deployed_workspace_revision_upgrades_and_rolls_back_exactly(self):
+        self.assertEqual(focus._hash(focus.WORKSPACE_BLOCK),
+                         "800c9fb153ff57f321769a47cd641e0767a78138fc9f1fe37b5bf7b81aa93fa1")
+        with mock.patch.object(focus, "BLOCK", focus.WORKSPACE_BLOCK):
+            self.install()
+        previous = self.config.read_bytes()
+        self.install()
+        self.assertIn(focus.DRAG_RULE, self.config.read_bytes())
+        self.assertTrue(focus.rollback_focus_rule(self.config, self.state))
+        self.assertEqual(self.config.read_bytes(), previous)
+
     def test_removal_preserves_user_edits_outside_block_and_current_mode(self):
         self.install()
         edited = b'-- newly added before\n' + self.config.read_bytes() + b'-- newly added after\n'
@@ -116,7 +143,7 @@ class FocusRuleTests(unittest.TestCase):
         installed = self.config.read_bytes()
         for old, new in ((b"focus_on_activate = false", b"focus_on_activate = true"),
                          (b"border_size = 0", b"border_size = 1"),
-                         (b'child.initial_title == "Fusion360"', b'child.initial_title == "other"')):
+                         (b'window.initial_title == "Fusion360"', b'window.initial_title == "other"')):
             with self.subTest(effect=old):
                 edited = installed.replace(old, new)
                 self.config.write_bytes(edited)
@@ -126,22 +153,22 @@ class FocusRuleTests(unittest.TestCase):
                     self.assertEqual(self.config.read_bytes(), edited)
 
     @unittest.skipUnless(shutil.which("lua"), "requires Lua for the isolated rule contract")
-    def test_rule_payload_scopes_only_activation_and_message_tray_border(self):
+    def test_rule_payload_scopes_activation_border_and_utility_animations(self):
         # Execute only our constant block, with a recording stub, never user config.
         capture = b'''hl = {on = function(name, callback)
-            assert((name == "window.move_to_workspace" or name == "window.active" or name == "window.fullscreen")
+            assert((name == "window.move_to_workspace" or name == "window.open" or name == "window.active" or name == "window.fullscreen")
                 and type(callback) == "function")
         end}
         o = { window = function(match, effects)
             assert(match.xwayland == true)
             assert(match.class ~= nil)
             for key, value in pairs(match) do
-                assert(key == "class" or key == "title" or key == "xwayland")
+                assert(key == "class" or key == "title" or key == "initial_title" or key == "xwayland")
             end
             local count = 0
             for key, value in pairs(effects) do
                 count = count + 1
-                io.write(match.class, "\\t", match.title or "", "\\t", key, "\\t", tostring(value), "\\n")
+                io.write(match.class, "\\t", match.title or match.initial_title or "", "\\t", key, "\\t", tostring(value), "\\n")
             end
             assert(count == 1)
         end }\n'''
@@ -150,6 +177,7 @@ class FocusRuleTests(unittest.TestCase):
         self.assertEqual(result.stdout.decode().splitlines(), [
             "^steam_app_fusion360$\t\tfocus_on_activate\tfalse",
             "^steam_app_fusion360$\t^Msg:QTView:.*MessageTray$\tborder_size\t0",
+            "^steam_app_fusion360$\t^Fusion360$\tno_anim\ttrue",
         ])
         title = result.stdout.decode().splitlines()[1].split("\t")[1]
         self.assertIsNotNone(re.fullmatch(title, "Msg:QTView:(102)MessageTray"))
@@ -480,11 +508,12 @@ class FocusRuleTests(unittest.TestCase):
 @unittest.skipUnless(shutil.which("lua"), "requires Lua for the isolated event contract")
 class LuaHookTests(unittest.TestCase):
     harness = "hyprland_monitor_contract.lua"
+    block_name = "BLOCK"
 
     def run_hook(self, assertions):
         with tempfile.TemporaryDirectory(prefix="fusion-monitor-test-") as directory:
             block = Path(directory) / "owned-block.lua"
-            block.write_bytes(focus.BLOCK)
+            block.write_bytes(getattr(focus, self.block_name))
             harness = Path(__file__).with_name(self.harness).read_bytes()
             result = subprocess.run([shutil.which("lua"), "-", str(block)], input=harness + assertions.encode(),
                                     capture_output=True, timeout=10)
@@ -492,6 +521,7 @@ class LuaHookTests(unittest.TestCase):
 
 
 class MonitorFollowTests(LuaHookTests):
+    block_name = "GROUP_BLOCK"  # Keep the deployed monitor hook's contract covered.
     def test_only_matching_floating_children_follow_the_exact_main_and_destination(self):
         self.run_hook('''
 local browser = child()
@@ -566,6 +596,7 @@ assert(#operations == 6 and windows[1].size.x == 600)
 
 class GroupFocusTests(LuaHookTests):
     harness = "hyprland_group_contract.lua"
+    block_name = "DRAG_BLOCK"  # Frozen pre-modal behavior remains covered.
 
     def test_active_and_fullscreen_repair_only_false_members_using_fresh_typed_windows(self):
         self.run_hook('''
@@ -635,6 +666,196 @@ assert(#operations == 5) -- A failed raise neither retries nor raises later memb
 fail_raise = false
 on_fullscreen(main)
 assert(#operations == 8 and active == main)
+''')
+
+
+class WorkspaceGroupTests(LuaHookTests):
+    harness = "hyprland_workspace_contract.lua"
+
+    def test_child_move_carries_main_siblings_and_tray_without_recursive_moves(self):
+        self.run_hook('''
+move(browser,destination)
+assert(main.workspace==destination and comments.workspace==destination and tray.workspace==destination)
+assert(browser.workspace==old_workspace) -- Native move completes after this event.
+assert(unrelated.workspace==old_workspace and #operations==5)
+assert(comments.size.x==600 and comments.size.y==400)
+''')
+
+    def test_main_move_preserves_utility_physical_size_and_unrelated_windows(self):
+        self.run_hook('''
+move(main,destination)
+assert(main.workspace==old_workspace and #operations==6)
+assert(browser.workspace==destination and comments.workspace==destination and tray.workspace==destination)
+assert(browser.size.x==600 and tray.size.y==400 and unrelated.workspace==old_workspace)
+''')
+
+    def test_opened_child_joins_existing_owner_without_following_focus(self):
+        self.run_hook('''
+browser.workspace,browser.monitor=destination,new_monitor
+open(browser)
+assert(browser.workspace==old_workspace and browser.size.x==150 and browser.size.y==100)
+assert(main.workspace==old_workspace and #operations==2)
+''')
+
+    def test_ambiguous_owner_and_unrelated_windows_are_not_moved(self):
+        self.run_hook('''
+table.insert(windows,child({initial_title="Autodesk Fusion"}))
+move(browser,destination)
+assert(#operations==0)
+table.remove(windows)
+for _,w in ipairs({child({pid=99}),child({class="other"}),child({xwayland=false}),
+    child({mapped=false})}) do
+  move(w,destination)
+  open(w)
+end
+assert(#operations==0)
+''')
+
+    def test_save_modal_and_other_same_process_windows_follow_unique_main(self):
+        self.run_hook('''
+save=child({initial_title="Save"})
+other=child({initial_title="Other Fusion dialog"})
+table.insert(windows,save);table.insert(windows,other)
+move(save,destination)
+assert(main.workspace==destination and other.workspace==destination)
+assert(browser.workspace==destination and unrelated.workspace==old_workspace)
+assert(save.workspace==old_workspace) -- Event's native operation completes next.
+''')
+
+    def test_failed_move_never_resizes_and_exception_releases_guard(self):
+        self.run_hook('''
+fail_move=true
+move(main,destination)
+assert(#operations==3 and browser.workspace==old_workspace)
+fail_move=false
+throw_move=true
+assert(not pcall(move,main,destination))
+throw_move=false
+move(main,destination)
+assert(#operations==9 and browser.workspace==destination)
+''')
+
+
+
+
+class ModalFocusTests(LuaHookTests):
+    harness = "hyprland_group_contract.lua"
+
+    def test_late_backdrop_open_reorders_an_already_eligible_save(self):
+        self.run_hook('''
+save=child({initial_title="Save"})
+backdrop=child()
+windows={main,save,browser,backdrop}
+for _,window in ipairs(windows) do window.allowed_over_fullscreen=true end
+on_open(save);on_open(backdrop)
+assert(#timers==2 and not timers[1].enabled and #operations==0)
+timers[1].callback();assert(#operations==0)
+timers[2].callback()
+assert(#operations==1 and operations[1]==save)
+on_active(save);assert(#operations==1)
+''')
+
+    def test_disappearing_open_trigger_does_not_lose_a_live_dialog_repair(self):
+        self.run_hook('''
+save=child({initial_title="Save"})
+backdrop=child()
+windows={main,browser,save,backdrop}
+for _,window in ipairs(windows) do window.allowed_over_fullscreen=true end
+on_open(backdrop);backdrop.mapped=false
+timers[1].callback()
+assert(#operations==1 and operations[1]==save)
+''')
+
+    def test_workspace_repair_uses_the_main_current_workspace_after_native_move(self):
+        self.run_hook('''
+save=child({initial_title="Save"})
+windows={main,browser,save}
+for _,window in ipairs(windows) do window.allowed_over_fullscreen=true end
+on_move(save,other_workspace)
+for _,window in ipairs(windows) do window.workspace=other_workspace end
+timers[1].callback()
+assert(#operations==1 and operations[1]==save)
+''')
+
+    def test_open_ambiguous_main_or_foreign_process_does_not_replace_timer(self):
+        self.run_hook('''
+save=child({initial_title="Save"});windows={main,browser,save}
+on_open(save);assert(#timers==1)
+local alien=child({pid=99,workspace=workspace})
+on_move(alien,workspace);assert(#timers==1 and timers[1].enabled)
+table.insert(windows,child({initial_title="Autodesk Fusion",floating=false}))
+on_move(save,workspace);assert(#timers==1 and timers[1].enabled)
+''')
+
+    def test_fullscreen_transition_reorders_already_eligible_surfaces_once(self):
+        self.run_hook('''
+save=child({initial_title="Save"})
+backdrop=child()
+windows={main,save,browser,backdrop};active=backdrop
+for _,window in ipairs(windows) do window.allowed_over_fullscreen=true end
+on_active(main)
+assert(#operations==0)
+recurse=true
+on_fullscreen(main)
+assert(#operations==0 and #timers==1)
+timers[1].callback()
+assert(#operations==1 and operations[1]==save)
+on_active(save)
+assert(#operations==1) -- Ordinary focus does not keep rebuilding the stack.
+on_fullscreen(main) -- Restoring the main window needs the same ordering.
+timers[#timers].callback()
+assert(#operations==2 and operations[2]==save)
+''')
+
+    def test_deferred_repair_cancels_old_transition_and_respects_other_app(self):
+        self.run_hook('''
+save=child({initial_title="Save"})
+windows={main,browser,save}
+for _,window in ipairs(windows) do window.allowed_over_fullscreen=true end
+on_fullscreen(main);on_fullscreen(main)
+assert(#timers==2 and not timers[1].enabled)
+timers[1].callback()
+assert(#operations==0)
+active={mapped=true,xwayland=true,class="other",pid=99}
+timers[2].callback()
+assert(#operations==0)
+active=main
+on_fullscreen(main)
+save.mapped=false
+timers[3].callback()
+assert(#operations==0) -- A closed modal is never raised by a stale timer.
+''')
+
+    def test_modal_is_raised_after_backdrop_even_when_listed_first(self):
+        self.run_hook('''
+save=child({initial_title="Save"})
+backdrop=child()
+windows={main,save,browser,backdrop}
+on_active(main)
+assert(#operations==4 and operations[1]==main and operations[4]==save)
+assert(save.allowed_over_fullscreen and backdrop.allowed_over_fullscreen)
+on_active(main)
+assert(#operations==4) -- No ongoing raise loop after eligibility is repaired.
+''')
+
+    def test_existing_eligible_modal_remains_above_a_newly_repaired_backdrop(self):
+        self.run_hook('''
+save=child({initial_title="Save Component Copy As",allowed_over_fullscreen=true})
+windows={main,save,browser,comments}
+on_active(browser)
+assert(#operations==4 and operations[4]==save and active==main)
+''')
+
+    def test_modal_event_repairs_its_group_but_never_other_application(self):
+        self.run_hook('''
+save=child({initial_title="Save"})
+windows={main,browser,comments,save};active=save
+on_active(save)
+assert(#operations==4 and operations[4]==save and active==save)
+main.allowed_over_fullscreen=false
+active={mapped=true,xwayland=true,class="other",pid=99}
+on_fullscreen(main)
+assert(#operations==4 and not main.allowed_over_fullscreen)
 ''')
 
 

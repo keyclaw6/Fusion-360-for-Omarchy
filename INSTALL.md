@@ -12,6 +12,10 @@ The reviewed system is x86-64 Omarchy 4.0.4-1, Hyprland 0.56.2, an AMD Radeon
 their own verification; a clean installation on a second machine has not yet
 been demonstrated.
 
+The 7 October 2026 desktop regression review also passed on Fusion 2705.1.30
+and kernel 7.2.5-3-omarchy. That scope covers the reported window, local-export
+and launch-placement issues; the broader modeling review above remains dated.
+
 Before running the installer, check:
 
 - A normal logged-in Omarchy desktop, Xwayland, and working user systemd/D-Bus.

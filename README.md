@@ -5,7 +5,7 @@ This unofficial community project provides an installer, desktop launcher and Om
 
 ![Fusion 360 for Omarchy — GPU-accelerated CAD on Linux](assets/fusion-for-omarchy.png)
 
-**Tested:** Fusion **2705.1.25** on **Omarchy 4.0.4-1**, with an AMD Radeon 8060S. The GE-Proton implementation passed independent hands-on review; the standalone Wine fallback is **unfinished**.
+**Tested:** Fusion **2705.1.30** desktop fixes on **Omarchy 4.0.4-1**, with an AMD Radeon 8060S. The broader modeling review passed on **2705.1.25**. GE-Proton is the accepted default; the standalone Wine fallback is **unfinished**.
 
 ## Install with your agent
 
@@ -31,7 +31,7 @@ The first installation downloads and builds a substantial toolchain; it can take
 ## What you get
 
 - **Fusion in the normal Omarchy desktop**, with a dedicated launcher and hardware-accelerated graphics.
-- **Window integration** that keeps Fusion's Browser and Comments panels usable when switching applications or monitors.
+- **Window integration** that moves Fusion's palettes and dialogs together, smooths Browser dragging, and keeps new launches on their original workspace.
 - **Optional Fusion bar widget** for opening the application, checking status and viewing diagnostics.
 - **Native Fusion MCP instructions** so a compatible agent can inspect and operate Fusion after you enable its local server.
 - **Pinned build recipes, backups and recovery tools**, with application data kept outside the repository.
@@ -51,7 +51,7 @@ The installer builds two narrowly patched Wine modules from pinned source and ad
 
 ## Tested configuration
 
-The recorded review was completed on **27 September 2026**:
+The broader modeling review was completed on **27 September 2026**:
 
 | Component | Tested version |
 | --- | --- |
@@ -67,6 +67,15 @@ The recorded review was completed on **27 September 2026**:
 These are tested versions, not a claim that every hardware/software combination works. Autodesk's downloader streams its current application build, so a new installation may receive a different Fusion version. Changed builds, drivers or desktop versions need fresh verification; checksum failures must not be bypassed.
 
 The independent review passed sketches, grids, workplanes, extrusion/fillet/editing, identified face selection, cloud and local file round trips, navigation of a 64-occurrence assembly, monitor movement and three authenticated cold launches.
+
+On **7 October 2026**, independent CUA review passed the desktop repairs on
+**Fusion 2705.1.30**, the same Omarchy/Hyprland/Mesa versions, and kernel
+**7.2.5-3-omarchy**: grouped workspaces, floating Browser dragging, Save rendering
+and input through maximize/restore, native exports to Home and Downloads, and a
+cold launch that stayed on its original workspace. Fusion's local MCP server
+was also verified. These are desktop regression checks, not a new GPU performance
+benchmark or repeat of the complete modeling review.
+See [the detailed issue record](docs/issues-2026-10-07.md).
 
 **Known limits:** File-menu Escape and Alt+F4 were inconsistent; click outside menus and use Omarchy's **Super+W** to close. CAM, simulation, suspend/resume and Windows/macOS frame-rate parity were not established. See the [acceptance summary](docs/acceptance.md) and [independent review](docs/operational-review.md).
 
@@ -90,3 +99,8 @@ The Wine experiment is kept for future development. It is not an automatic failo
 - [Documentation index and experimental history](docs/README.md)
 
 This is an **unofficial community integration**, not an Autodesk or Omarchy product, partnership or endorsement. The integration code is MIT-licensed; Wine patches and other upstream material retain their own licenses. Autodesk Fusion and all trademarks remain their owners' property. See [LICENSE](LICENSE), [third-party notices](THIRD_PARTY_NOTICES.md) and [artwork credits](assets/README.md).
+
+Local files use **File → Export**, with access to Home, Downloads and writable
+mounted storage. See [folder setup](docs/filesystem.md). The October 7 desktop
+repairs cover grouped workspaces, palette dragging, modal stacking and launch
+placement; [the issue record](docs/issues-2026-10-07.md) states the tested limits.

@@ -9,6 +9,8 @@ is unfinished research retained for future fallback development.
 - [Installation, updates, backups and removal](install.md)
 - [Autodesk sign-in](authentication.md)
 - [Hyprland integration](hyprland.md)
+- [Local filesystem access](filesystem.md)
+- [7 October desktop fixes and verification limits](issues-2026-10-07.md)
 - [Optional Omarchy widget](plugin.md)
 - [Native Fusion MCP and agent configuration](native-automation.md)
 - [Acceptance status](acceptance.md), [operational review](operational-review.md)

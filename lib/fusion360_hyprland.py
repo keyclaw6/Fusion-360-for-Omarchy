@@ -123,8 +123,177 @@ do
   hl.on("window.fullscreen", repair)
 end
 '''
-BLOCK = MONITOR_BLOCK.removesuffix(END + b"\n") + GROUP_FOCUS_HOOK + END + b"\n"
-BLOCK_VERSIONS = (LEGACY_BLOCK, MONITOR_BLOCK, BLOCK)
+# Preserve the September deployment exactly for ownership checks and rollback.
+GROUP_BLOCK = MONITOR_BLOCK.removesuffix(END + b"\n") + GROUP_FOCUS_HOOK + END + b"\n"
+WORKSPACE_HOOK = b'''-- Keep observed Fusion utilities with their unique owning main window.
+-- Browser/Comments have an X11 transient owner, unavailable in the Lua API.
+-- Restrict the fallback to the observed class, PID and utility titles.
+do
+  local class, busy = "steam_app_fusion360", false
+  local function positive(value)
+    return type(value) == "number" and value > 0 and value < math.huge
+  end
+  local function fusion(window)
+    return window and window.mapped and window.xwayland and window.class == class
+        and positive(window.pid)
+  end
+  local function main_window(window)
+    local title = window and window.initial_title
+    return fusion(window) and type(title) == "string"
+        and title:match("^%s*(.-)%s*$") == "Autodesk Fusion"
+  end
+  local function child_window(child, main)
+    return fusion(child) and child ~= main and child.pid == main.pid and child.floating
+        and (child.initial_title == "Fusion360"
+          or (type(child.initial_title) == "string"
+            and child.initial_title:match("^Msg:QTView:.*MessageTray$")))
+  end
+  local function owner(event, windows)
+    local main
+    for _, window in ipairs(windows) do
+      if main_window(window) and window.pid == event.pid then
+        if main then return nil end -- Multiple main windows: do not guess ownership.
+        main = window
+      end
+    end
+    if main and (event == main or child_window(event, main)) then return main end
+  end
+  local function together(event, destination, opening)
+    if busy or not fusion(event) then return end
+    local windows = hl.get_windows({class = class, mapped = true})
+    local main = owner(event, windows)
+    if not main then return end
+    if opening then destination = main.workspace end
+    if not destination then return end
+    local new_scale = destination.monitor and destination.monitor.scale
+    busy = true
+    local ok, failure = pcall(function()
+      for _, window in ipairs(windows) do
+        -- A move event precedes its own workspace/monitor update; do not move it twice.
+        if (opening or window ~= event) and (window == main or child_window(window, main))
+            and window.workspace and window.workspace ~= destination then
+          local size, old_scale = window.size, window.monitor and window.monitor.scale
+          local width, height
+          if window ~= main and positive(old_scale) and positive(new_scale)
+              and type(size) == "table" and positive(size.x) and positive(size.y) then
+            width, height = size.x * old_scale / new_scale, size.y * old_scale / new_scale
+          end
+          local moved = hl.dispatch(hl.dsp.window.move({window = window, workspace = destination, follow = false}))
+          if moved and moved.ok and window.mapped and window.workspace == destination
+              and positive(width) and positive(height) then
+            hl.dispatch(hl.dsp.window.resize({window = window, x = width, y = height, relative = false}))
+          end
+        end
+      end
+    end)
+    busy = false
+    if not ok then error(failure) end
+  end
+  hl.on("window.move_to_workspace", function(event, destination) together(event, destination, false) end)
+  hl.on("window.open", function(event) together(event, nil, true) end)
+end
+'''
+# Freeze the deployed workspace repair before adding the drag fix.
+WORKSPACE_BLOCK = LEGACY_BLOCK.removesuffix(END + b"\n") + WORKSPACE_HOOK + GROUP_FOCUS_HOOK + END + b"\n"
+DRAG_RULE = b'''-- Qt moves its own utility windows while dragging. Compositor animation competes.
+o.window({ class = "^steam_app_fusion360$", initial_title = "^Fusion360$", xwayland = true }, { no_anim = true })
+'''
+DRAG_BLOCK = WORKSPACE_BLOCK.removesuffix(END + b"\n") + DRAG_RULE + END + b"\n"
+# Save dialogs are NORMAL windows without WM_TRANSIENT_FOR. Same-PID windows
+# belong to the unique Fusion main window, including its modal and backdrop.
+DIALOG_WORKSPACE_HOOK = WORKSPACE_HOOK.replace(
+    b'''return fusion(child) and child ~= main and child.pid == main.pid and child.floating
+        and (child.initial_title == "Fusion360"
+          or (type(child.initial_title) == "string"
+            and child.initial_title:match("^Msg:QTView:.*MessageTray$")))''',
+    b'''return fusion(child) and child ~= main and child.pid == main.pid''',
+).replace(b"if window ~= main and positive(old_scale)",
+          b"if window ~= main and window.floating and positive(old_scale)")
+DIALOG_FOCUS_HOOK = GROUP_FOCUS_HOOK.replace(
+    b'''and window.initial_title == "Fusion360" and window.workspace == main.workspace''',
+    b'''and window.workspace == main.workspace''',
+).replace(
+    b'''    if not main_window(event) and not (event.floating and event.initial_title == "Fusion360") then return end
+''', b"",
+).replace(
+    b"local function raise(window)", b"local changed = false\n      local function raise(window, force)",
+).replace(
+    b"if member(window) and window.allowed_over_fullscreen == false then",
+    b"if member(window) and (force or window.allowed_over_fullscreen == false) then",
+).replace(
+    b"return result and result.ok", b"changed = true\n          return result and result.ok",
+).replace(
+    b'''      for _, window in ipairs(windows) do
+        if child_window(window, main) and not raise(window) then return end
+      end''',
+    b'''      local function utility(window)
+        return window.initial_title == "Fusion360" or
+          (type(window.initial_title) == "string" and window.initial_title:match("^Msg:QTView:.*MessageTray$"))
+      end
+      -- Backdrops and palettes first, then actual dialogs. Never put the veil
+      -- above Save while repairing eligibility after a fullscreen/workspace move.
+      for _, window in ipairs(windows) do
+        if child_window(window, main) and utility(window) and not raise(window) then return end
+      end
+      for _, window in ipairs(windows) do
+        if child_window(window, main) and not utility(window) and not raise(window, changed) then return end
+      end''',
+)
+MODAL_BLOCK = DRAG_BLOCK.replace(WORKSPACE_HOOK, DIALOG_WORKSPACE_HOOK).replace(GROUP_FOCUS_HOOK, DIALOG_FOCUS_HOOK)
+# Fullscreen changes can reorder already-eligible surfaces. Reestablish the
+# stack once for that event; ordinary focus keeps its eligibility-only behavior.
+FULLSCREEN_FOCUS_HOOK = DIALOG_FOCUS_HOOK.replace(
+    b'local class, busy = "steam_app_fusion360", false',
+    b'local class, busy = "steam_app_fusion360", false\n  local pending, generation = nil, 0',
+).replace(
+    b"local function repair(event)", b"local function repair(event, force_stack)",
+).replace(
+    b"not raise(window, changed)", b"not raise(window, force_stack or changed)",
+).replace(
+    b'hl.on("window.fullscreen", repair)', b'''hl.on("window.fullscreen", function(window)
+    if busy or not fusion(window) then return end
+    generation = generation + 1
+    local current = generation
+    if pending then pending:set_enabled(false) end
+    -- Fullscreen's native layout/stack update runs after its event callbacks.
+    -- Repair once after that update, never through an ongoing polling loop.
+    pending = hl.timer(function()
+      if current ~= generation then return end
+      pending = nil
+      repair(window, true)
+    end, {timeout=600,type="oneshot"})
+  end)''',
+)
+# Preserve the deployed fullscreen-only repair for exact upgrade and rollback.
+FULLSCREEN_BLOCK = MODAL_BLOCK.replace(DIALOG_FOCUS_HOOK, FULLSCREEN_FOCUS_HOOK)
+LIFECYCLE_FOCUS_HOOK = FULLSCREEN_FOCUS_HOOK.replace(
+    b'''  hl.on("window.fullscreen", function(window)
+    if busy or not fusion(window) then return end
+    generation = generation + 1''',
+    b'''  local function schedule(window)
+    if busy or not fusion(window) then return end
+    local main
+    for _, candidate in ipairs(hl.get_windows({class = class, mapped = true})) do
+      if main_window(candidate) and candidate.pid == window.pid then
+        if main then return end
+        main = candidate
+      end
+    end
+    if not main then return end
+    generation = generation + 1''',
+).replace(
+    b"repair(window, true)", b"repair(main, true)",
+).replace(
+    b"  end)\nend\n",
+    b'''  end
+  hl.on("window.fullscreen", schedule)
+  hl.on("window.open", schedule)
+  hl.on("window.move_to_workspace", schedule)
+end
+''',
+)
+BLOCK = MODAL_BLOCK.replace(DIALOG_FOCUS_HOOK, LIFECYCLE_FOCUS_HOOK)
+BLOCK_VERSIONS = (LEGACY_BLOCK, MONITOR_BLOCK, GROUP_BLOCK, WORKSPACE_BLOCK, DRAG_BLOCK, MODAL_BLOCK, FULLSCREEN_BLOCK, BLOCK)
 KNOWN_BLOCKS = {hashlib.sha256(block).hexdigest(): block for block in BLOCK_VERSIONS}
 
 
@@ -246,8 +415,8 @@ def _previous_version(directory: Path, config: Path, record: dict) -> tuple[byte
     _check_record(directory, config, old)
     before = _saved_bytes(directory, upgrade["config_backup"], "before-upgrade-config-", upgrade["config_sha256"])
     current_block, old_block = KNOWN_BLOCKS[record["block_sha256"]], KNOWN_BLOCKS[old["block_sha256"]]
-    # Only these three frozen revisions exist. Strictly decreasing versions
-    # bound validation to two links and rule out cycles or unknown histories.
+    # Strictly decreasing known versions bound validation and rule out cycles
+    # or unknown histories while retaining every deployed revision's bytes.
     if (BLOCK_VERSIONS.index(old_block) >= BLOCK_VERSIONS.index(current_block)
             or old["status"] == "removed" or _find_block(before) != old_block):
         raise ValueError()

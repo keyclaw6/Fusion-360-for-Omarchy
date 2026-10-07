@@ -7,6 +7,8 @@ import hashlib
 import io
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
@@ -23,6 +25,9 @@ def reg_escape(value):
 
 class LauncherBoundaries(unittest.TestCase):
     def setUp(self):
+        isolated_env = patch.dict(os.environ, {"HYPRLAND_INSTANCE_SIGNATURE": ""})
+        isolated_env.start()
+        self.addCleanup(isolated_env.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -1233,6 +1238,176 @@ class LauncherBoundaries(unittest.TestCase):
             self.assertEqual(fusion.main(["configure-browser", str(helper)]), 0)
             self.assertEqual(attach.call_count, 1)
             self.assertEqual(attach.call_args.args[:2], (self.paths, registry_utility))
+
+
+class StartupWorkspaceTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("lua"), "requires Lua for startup retry behavior")
+    def test_old_timeout_and_cleanup_cannot_disable_a_retry(self):
+        paths = fusion.Paths(Path("/tmp/fusion-tests/state"), Path("/tmp/fusion-tests/runtime"))
+        with patch.object(fusion.subprocess, "run", return_value=Mock(returncode=0, stdout="ok")) as run:
+            first = fusion.anchor_startup(paths, "4")
+            first_create = run.call_args.args[0][2]
+            fusion.release_startup_anchor(first)
+            first_release = run.call_args.args[0][2]
+            second = fusion.anchor_startup(paths, "6")
+            second_create = run.call_args.args[0][2]
+            fusion.release_startup_anchor(second)
+            second_release = run.call_args.args[0][2]
+        harness = '''
+local rules, timers, subscriptions, windows = {}, {}, {}, {}
+hl = {
+  get_windows=function() return windows end,
+  window_rule=function(args)
+    local r=rules[args.name] or {}
+    r.enabled=true; r.workspace=args.workspace
+    function r:set_enabled(value) self.enabled=value end
+    rules[args.name]=r; return r
+  end,
+  on=function(event,callback)
+    assert(event=="window.open" or event=="window.close")
+    local s={event=event,callback=callback,removed=false}
+    function s:remove() self.removed=true end
+    subscriptions[#subscriptions+1]=s; return s
+  end,
+  timer=function(callback,args)
+    assert(args.type=="oneshot" and args.timeout==120000)
+    local t={callback=callback,enabled=true}
+    function t:set_enabled(value) self.enabled=value end
+    timers[#timers+1]=t; return t
+  end
+}
+'''
+        script = harness + first_create + '\n' + first_release + '''
+assert(subscriptions[1].removed and subscriptions[2].removed and not timers[1].enabled)
+''' + second_create + '''
+local rule=next(rules) and select(2,next(rules))
+assert(rule.enabled and rule.workspace=="6 silent")
+timers[1].callback()
+assert(rule.enabled, "old timeout disabled retry")
+''' + first_release + '''
+assert(rule.enabled, "old Python cleanup disabled retry")
+assert(subscriptions[3].event=="window.open" and subscriptions[4].event=="window.close")
+subscriptions[3].callback({mapped=true,xwayland=true,class="another-app",initial_title="Autodesk Fusion"})
+assert(rule.enabled)
+local splash={mapped=true,xwayland=true,class="steam_app_fusion360",pid=42,address="splash",initial_title="Autodesk Fusion"}
+local main={mapped=true,xwayland=true,class="steam_app_fusion360",pid=42,address="main",initial_title="Autodesk Fusion "}
+local tray={mapped=true,xwayland=true,class="steam_app_fusion360",pid=42,address="tray",initial_title="Msg:QTView:(102)MessageTray"}
+windows={splash};subscriptions[3].callback(splash)
+assert(rule.enabled, "splash ended anchor before separate main mapping")
+windows={splash,main};subscriptions[3].callback(main)
+assert(rule.enabled, "coexisting main and splash ended anchor")
+windows={splash,main,tray};subscriptions[3].callback(tray)
+assert(rule.enabled, "ambiguous owner ended anchor")
+-- Close callbacks may still see the closing window in get_windows.
+subscriptions[4].callback(splash)
+assert(not rule.enabled and subscriptions[3].removed and subscriptions[4].removed and not timers[2].enabled)
+''' + second_release + '\nwindows={}\n' + first_create + '''
+assert(rule.enabled)
+timers[3].callback()
+assert(not rule.enabled and subscriptions[5].removed and subscriptions[6].removed and not timers[3].enabled)
+''' + '\nwindows={}\n' + second_create + '''
+windows={main};subscriptions[7].callback(main)
+assert(rule.enabled, "main alone ended anchor before its UI exists")
+local foreign_tray={mapped=true,xwayland=true,class="steam_app_fusion360",pid=99,address="foreign",initial_title="Msg:QTView:(102)MessageTray"}
+windows={main,foreign_tray};subscriptions[7].callback(foreign_tray)
+assert(rule.enabled, "another process ended anchor")
+windows={main,tray};subscriptions[7].callback(tray)
+assert(not rule.enabled and subscriptions[7].removed and subscriptions[8].removed and not timers[4].enabled)
+'''
+        result = subprocess.run([shutil.which("lua"), "-"], input=script, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_captures_workspace_without_shell_or_global_tracking_change(self):
+        with patch.dict(os.environ, {"HYPRLAND_INSTANCE_SIGNATURE": "test"}), patch.object(fusion.shutil, "which", return_value="hyprctl"), patch.object(fusion.subprocess, "run", return_value=Mock(stdout='{"name":"4"}')) as run:
+            self.assertEqual(fusion.launch_workspace(), "4")
+            self.assertEqual(run.call_args.args[0], ["hyprctl", "-j", "activeworkspace"])
+
+    def test_rejects_invalid_workspace_and_absent_compositor(self):
+        with patch.dict(os.environ, {"HYPRLAND_INSTANCE_SIGNATURE": ""}), patch.object(fusion.subprocess, "run") as run:
+            self.assertIsNone(fusion.launch_workspace());run.assert_not_called()
+        with patch.dict(os.environ, {"HYPRLAND_INSTANCE_SIGNATURE": "test"}), patch.object(fusion.shutil, "which", return_value="hyprctl"), patch.object(fusion.subprocess, "run", return_value=Mock(stdout='{"name":"4; os.execute()"}')):
+            self.assertIsNone(fusion.launch_workspace())
+
+    def test_anchor_has_silent_class_scope_automatic_cleanup_and_failure_cleanup(self):
+        paths = fusion.Paths(Path("/tmp/fusion-tests/state"), Path("/tmp/fusion-tests/runtime"))
+        with patch.object(fusion.subprocess, "run", return_value=Mock(returncode=0,stdout="ok")) as run:
+            name=fusion.anchor_startup(paths,"4")
+            expression=run.call_args.args[0][2]
+            self.assertIn('workspace="4 silent"', expression)
+            self.assertIn('class="^steam_app_fusion360$",xwayland=true', expression)
+            self.assertIn('if #existing > 0 then return end', expression)
+            self.assertIn('timeout=120000,type="oneshot"', expression)
+            self.assertIn('subscription:remove()', expression)
+            fusion.release_startup_anchor(name)
+            self.assertIn('slot.finish()',run.call_args.args[0][2])
+            self.assertIn(name[1],run.call_args.args[0][2])
+            self.assertNotIn('initial_workspace_tracking',expression)
+
+
+class HostFolderTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.home = self.root / "home"
+        self.home.mkdir()
+        for name in ("Documents", "Downloads"):
+            (self.home / name).mkdir()
+        self.paths = fusion.Paths(self.root / "state", self.root / "runtime")
+        (self.paths.prefix / "dosdevices").mkdir(parents=True)
+        (self.paths.prefix / "dosdevices/z:").symlink_to("/", target_is_directory=True)
+        target = self.paths.prefix / "drive_c/windows/system32/reg.exe"
+        target.parent.mkdir(parents=True)
+        target.touch()
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        for name in ("validate_runtime", "require_session"):
+            stack.enter_context(patch.object(fusion, name))
+        stack.enter_context(patch.object(fusion.Path, "home", return_value=self.home))
+        stack.enter_context(patch.object(fusion.shutil, "which", return_value=None))
+        self.calls = []
+
+    def attach(self, paths, target, arguments):
+        self.calls.append(arguments)
+        if arguments[0] == "export":
+            # Resolve the tested Z: path without creating a Wine process.
+            Path(arguments[2][2:].replace("\\", "/")).write_text("backup fixture")
+        return 0
+
+    def test_backs_up_all_keys_before_setting_host_paths(self):
+        with patch.object(fusion, "attach", side_effect=self.attach):
+            self.assertEqual(fusion.configure_host_folders(self.paths), 0)
+        self.assertEqual([call[0] for call in self.calls], ["export"] * 3 + ["add"] * 5)
+        values = [call[call.index("/d") + 1] for call in self.calls[3:]]
+        self.assertEqual(values[-1], "file:///Z:" + self.home.as_posix())
+        self.assertIn(str(fusion.PureWindowsPath("Z:\\", *self.home.parts[1:], "Documents")), values)
+        for file in (self.paths.state / "host-folders").glob("*/*.reg"):
+            self.assertEqual(file.stat().st_mode & 0o777, 0o600)
+
+    def test_missing_preference_key_stops_before_any_add(self):
+        with patch.object(fusion, "attach", side_effect=[0, 1]) as attach:
+            # Successful exports create their actual backup file.
+            def fail_second(paths, target, arguments):
+                if len(self.calls) == 1:
+                    self.calls.append(arguments)
+                    return 1
+                return self.attach(paths, target, arguments)
+            attach.side_effect = fail_second
+            with self.assertRaisesRegex(fusion.LauncherError, "no preferences were changed"):
+                fusion.configure_host_folders(self.paths)
+        self.assertEqual([call[0] for call in self.calls], ["export", "export"])
+
+    def test_add_failure_retains_private_backups(self):
+        def fail_add(paths, target, arguments):
+            if arguments[0] == "add":
+                self.calls.append(arguments)
+                return 1
+            return self.attach(paths, target, arguments)
+        with patch.object(fusion, "attach", side_effect=fail_add):
+            with self.assertRaisesRegex(fusion.LauncherError, "prior preferences are preserved"):
+                fusion.configure_host_folders(self.paths)
+        self.assertEqual(len(list((self.paths.state / "host-folders").glob("*/*.reg"))), 3)
+        self.assertEqual([call[0] for call in self.calls], ["export"] * 3 + ["add"])
 
 
 if __name__ == "__main__":
